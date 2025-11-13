@@ -1,0 +1,100 @@
+package com.automaton.core.render;
+
+import com.automaton.core.physics.Particle;
+import com.automaton.core.physics.PhysicsWorld;
+import com.badlogic.gdx.graphics.Color;
+import com.badlogic.gdx.graphics.OrthographicCamera;
+import com.badlogic.gdx.graphics.Pixmap;
+import com.badlogic.gdx.graphics.Pixmap.Format;
+import com.badlogic.gdx.graphics.Texture;
+import com.badlogic.gdx.graphics.g2d.SpriteBatch;
+import com.badlogic.gdx.graphics.g2d.TextureRegion;
+import com.badlogic.gdx.math.MathUtils;
+import com.badlogic.gdx.math.Vector2;
+import com.badlogic.gdx.utils.Array;
+import com.badlogic.gdx.utils.Disposable;
+
+/**
+ * Renders particles using a batched sprite. A small circular texture is generated
+ * at runtime to avoid asset dependencies.
+ * Particles are colored by their type: RED (cannot bond with BLUE), BLUE (cannot bond with RED),
+ * YELLOW (can bond with RED and BLUE, but not with other YELLOW - violent reactions occur).
+ */
+public final class ParticleRenderer implements Disposable {
+    private static final int TEXTURE_SIZE = 32;
+
+    private final SpriteBatch batch;
+    private final TextureRegion circleRegion;
+    private final Color tmpColor = new Color();
+    private PhysicsWorld physicsWorld; // For component size queries
+
+    public ParticleRenderer() {
+        this.batch = new SpriteBatch();
+        Texture circleTexture = buildCircleTexture(TEXTURE_SIZE);
+        this.circleRegion = new TextureRegion(circleTexture);
+    }
+
+    public void setPhysicsWorld(PhysicsWorld world) {
+        this.physicsWorld = world;
+    }
+
+    public void render(Array<Particle> particles, OrthographicCamera camera) {
+        batch.setProjectionMatrix(camera.combined);
+        batch.begin();
+        for (Particle particle : particles) {
+            Vector2 pos = particle.getPosition();
+            float radius = particle.getVisualRadius();
+            float diameter = radius * 2f;
+            float drawX = pos.x - radius;
+            float drawY = pos.y - radius;
+            
+            // Color based on particle type (R, B, Y)
+            Color typeColor = particle.getType().getColor();
+            batch.setColor(typeColor);
+            
+            batch.draw(circleRegion, drawX, drawY, diameter, diameter);
+        }
+        batch.setColor(Color.WHITE); // Reset
+        batch.end();
+    }
+
+    /**
+     * Get color for a mol based on its size.
+     * Gradient: white (size 1) -> light blue -> dark blue (size 10+)
+     */
+    private void getColorForMolSize(int size, Color out) {
+        // Clamp size to [1, 10]
+        float t = MathUtils.clamp((size - 1) / 9f, 0f, 1f);
+        
+        // Interpolate from white (1,1,1) to dark blue (0.1, 0.1, 0.5)
+        out.r = 1f - t * 0.9f;
+        out.g = 1f - t * 0.9f;
+        out.b = 1f - t * 0.5f;
+        out.a = 1f;
+    }
+
+    @Override
+    public void dispose() {
+        batch.dispose();
+        circleRegion.getTexture().dispose();
+    }
+
+    private Texture buildCircleTexture(int size) {
+        Pixmap pixmap = new Pixmap(size, size, Format.RGBA8888);
+        pixmap.setBlending(Pixmap.Blending.None);
+        pixmap.setColor(1f, 1f, 1f, 1f);
+        int radius = size / 2;
+        for (int y = 0; y < size; y++) {
+            for (int x = 0; x < size; x++) {
+                int dx = x - radius;
+                int dy = y - radius;
+                if (dx * dx + dy * dy <= radius * radius) {
+                    pixmap.drawPixel(x, y);
+                }
+            }
+        }
+        Texture texture = new Texture(pixmap);
+        pixmap.dispose();
+        return texture;
+    }
+}
