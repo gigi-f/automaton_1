@@ -114,6 +114,24 @@ public class AutomatonGame extends ApplicationAdapter {
         table.add(frictionLabel).padBottom(5).row();
         table.add(frictionSlider).width(200).row();
         
+        // Reaction Violence slider
+        table.add(new Label("", skin)).padTop(15).row(); // Spacer
+        Label violenceLabel = new Label("Reaction Violence: 1.00x", skin);
+        Slider violenceSlider = new Slider(0f, 5f, 0.1f, false, skin);
+        violenceSlider.setValue(physicsWorld.getReactionViolenceMultiplier());
+        
+        violenceSlider.addListener(new ChangeListener() {
+            @Override
+            public void changed(ChangeEvent event, Actor actor) {
+                float violence = violenceSlider.getValue();
+                physicsWorld.setReactionViolenceMultiplier(violence);
+                violenceLabel.setText(String.format("Reaction Violence: %.2fx", violence));
+            }
+        });
+        
+        table.add(violenceLabel).padBottom(5).row();
+        table.add(violenceSlider).width(200).row();
+        
         uiStage.addActor(table);
     }
     
@@ -189,7 +207,7 @@ public class AutomatonGame extends ApplicationAdapter {
         Array<Bond> bondsToRemove = new Array<>(bonds);
         
         for (Bond bond : bondsToRemove) {
-            physicsWorld.destroyBond(bond);
+            physicsWorld.destroyBond(bond, false);  // No violent reactions on restart
         }
         
         for (Particle particle : particlesToRemove) {

@@ -30,8 +30,10 @@ public final class PhysicsWorld implements Disposable {
     private final SpatialHashGrid spatialGrid;
     private final UnionFind unionFind;
     private final BondProperties bondProperties;
+    private float reactionViolenceMultiplier;
 
     public PhysicsWorld(Vector2 gravity, int initialParticleCapacity) {
+        this.reactionViolenceMultiplier = 1.0f;  // Default: normal violence
         this.world = new World(gravity, true);
         this.particlePool = new ParticlePool(initialParticleCapacity, Integer.MAX_VALUE);
         this.bondPool = new BondPool(initialParticleCapacity * 2, Integer.MAX_VALUE);
@@ -45,6 +47,14 @@ public final class PhysicsWorld implements Disposable {
     
     public BondProperties getBondProperties() {
         return bondProperties;
+    }
+    
+    public void setReactionViolenceMultiplier(float multiplier) {
+        this.reactionViolenceMultiplier = Math.max(0f, multiplier);
+    }
+    
+    public float getReactionViolenceMultiplier() {
+        return reactionViolenceMultiplier;
     }
 
     public World getWorld() {
@@ -181,15 +191,63 @@ public final class PhysicsWorld implements Disposable {
     }
 
     public void destroyBond(Bond bond) {
+        destroyBond(bond, true);
+    }
+    
+    /**
+     * Destroy a bond, optionally applying a violent reaction force.
+     * The strength of the reaction is proportional to the bond's break force threshold.
+     */
+    public void destroyBond(Bond bond, boolean applyViolentReaction) {
         if (bond == null || !bond.isActive()) {
             return;
         }
+        
+        // Apply violent reaction before deactivating
+        if (applyViolentReaction) {
+            applyBondBreakReaction(bond);
+        }
+        
         bond.deactivate();
         activeBonds.removeValue(bond, true);
         bondPool.free(bond);
         
         // Note: Union-Find doesn't support efficient split operations.
         // For accurate component tracking after many bond breaks, call rebuildUnionFind()
+    }
+    
+    /**
+     * Apply violent reaction force when a bond breaks.
+     * Stronger bonds create more violent reactions (stronger repulsion).
+     * Force is modulated by the reactionViolenceMultiplier slider.
+     */
+    private void applyBondBreakReaction(Bond bond) {
+        Particle a = bond.getParticleA();
+        Particle b = bond.getParticleB();
+        
+        // Reaction force scales with bond strength (break force threshold)
+        // Base: 200, Range: 60-600, Scale: 2-12x multiplier
+        float breakForce = bond.getBreakForceThreshold();
+        float reactionMultiplier = breakForce / 50f;  // 60->1.2x, 200->4x, 600->12x
+        float baseRepulsion = 300f;
+        float repulsionStrength = baseRepulsion * reactionMultiplier * reactionViolenceMultiplier;
+        
+        // Calculate direction from A to B
+        Vector2 posA = a.getPosition();
+        Vector2 posB = b.getPosition();
+        Vector2 direction = new Vector2(posB).sub(posA);
+        float distance = direction.len();
+        
+        if (distance > 0.001f) {
+            direction.nor();
+            
+            // Apply explosive force pushing particles apart
+            Vector2 forceA = new Vector2(direction).scl(-repulsionStrength);
+            Vector2 forceB = new Vector2(direction).scl(repulsionStrength);
+            
+            a.getBody().applyForceToCenter(forceA, true);
+            b.getBody().applyForceToCenter(forceB, true);
+        }
     }
 
     public void step(float delta, int velocityIterations, int positionIterations) {
@@ -236,62 +294,21 @@ public final class PhysicsWorld implements Disposable {
                 if (bondA.intersects(bondB)) {
                     bondsToBreak.add(bondA);
                     bondsToBreak.add(bondB);
-                    
-                    // Apply repulsive force at intersection point
-                    applyRepulsiveForceAtCrossing(bondA, bondB);
                 }
             }
         }
         
-        // Break all crossing bonds
+        // Break all crossing bonds (violent reactions applied automatically)
         for (Bond bond : bondsToBreak) {
             if (bond.isActive()) {
-                destroyBond(bond);
+                destroyBond(bond, true);
             }
-        }
-    }
-
-    /**
-     * Apply explosive repulsive force to push apart nodes when bonds cross.
-     */
-    private void applyRepulsiveForceAtCrossing(Bond bondA, Bond bondB) {
-        float repulsionStrength = 500f;  // Strong force to separate nodes
-        
-        // Get all 4 particles involved
-        Particle a1 = bondA.getParticleA();
-        Particle a2 = bondA.getParticleB();
-        Particle b1 = bondB.getParticleA();
-        Particle b2 = bondB.getParticleB();
-        
-        // Calculate rough intersection point (midpoint approximation)
-        Vector2 centerA = new Vector2(a1.getPosition()).add(a2.getPosition()).scl(0.5f);
-        Vector2 centerB = new Vector2(b1.getPosition()).add(b2.getPosition()).scl(0.5f);
-        Vector2 crossPoint = new Vector2(centerA).add(centerB).scl(0.5f);
-        
-        // Apply forces pushing each particle away from crossing point
-        applyRepulsionFromPoint(a1, crossPoint, repulsionStrength);
-        applyRepulsionFromPoint(a2, crossPoint, repulsionStrength);
-        applyRepulsionFromPoint(b1, crossPoint, repulsionStrength);
-        applyRepulsionFromPoint(b2, crossPoint, repulsionStrength);
-    }
-
-    /**
-     * Apply repulsive force to push particle away from a point.
-     */
-    private void applyRepulsionFromPoint(Particle particle, Vector2 point, float strength) {
-        Vector2 pos = particle.getPosition();
-        Vector2 dir = new Vector2(pos).sub(point);
-        float dist = dir.len();
-        
-        if (dist > 0.001f) {
-            dir.nor().scl(strength / (dist + 0.1f));  // Inverse distance falloff
-            particle.getBody().applyForceToCenter(dir, true);
         }
     }
 
     public void clearAllBonds() {
         for (int i = activeBonds.size - 1; i >= 0; i--) {
-            destroyBond(activeBonds.get(i));
+            destroyBond(activeBonds.get(i), false);  // No violent reactions on cleanup
         }
     }
 
