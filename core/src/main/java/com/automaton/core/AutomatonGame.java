@@ -1,5 +1,6 @@
 package com.automaton.core;
 
+import com.automaton.core.physics.Bond;
 import com.automaton.core.physics.BondType;
 import com.automaton.core.physics.Particle;
 import com.automaton.core.physics.ParticleType;
@@ -10,11 +11,20 @@ import com.automaton.core.render.ParticleRenderer;
 import com.badlogic.gdx.ApplicationAdapter;
 import com.badlogic.gdx.Gdx;
 import com.badlogic.gdx.Input;
+import com.badlogic.gdx.InputMultiplexer;
 import com.badlogic.gdx.graphics.GL20;
 import com.badlogic.gdx.graphics.OrthographicCamera;
 import com.badlogic.gdx.math.MathUtils;
 import com.badlogic.gdx.math.Vector2;
+import com.badlogic.gdx.scenes.scene2d.Actor;
+import com.badlogic.gdx.scenes.scene2d.Stage;
+import com.badlogic.gdx.scenes.scene2d.ui.Label;
+import com.badlogic.gdx.scenes.scene2d.ui.Skin;
+import com.badlogic.gdx.scenes.scene2d.ui.Slider;
+import com.badlogic.gdx.scenes.scene2d.ui.Table;
+import com.badlogic.gdx.scenes.scene2d.utils.ChangeListener;
 import com.badlogic.gdx.utils.Array;
+import com.badlogic.gdx.utils.viewport.ScreenViewport;
 import java.util.Random;
 
 public class AutomatonGame extends ApplicationAdapter {
@@ -34,7 +44,13 @@ public class AutomatonGame extends ApplicationAdapter {
     private OrthographicCamera camera;
     private CameraController cameraController;
     private float accumulator;
-    private boolean enableReactions = true; // Toggle with 'R' key (enabled by default)
+    private boolean enableReactions = true; // Enabled by default
+    
+    // UI
+    private Stage uiStage;
+    private Skin skin;
+    private float yellowFriction = 0.0f;  // Friction for yellow particles
+    private boolean uiVisible = true;  // Toggle with 'H' key
 
     @Override
     public void create() {
@@ -56,17 +72,152 @@ public class AutomatonGame extends ApplicationAdapter {
         camera.update();
 
         cameraController = new CameraController(camera);
-        Gdx.input.setInputProcessor(cameraController);
+        
+        // Create UI
+        createUI();
+        
+        // Set up input multiplexer to handle both UI and camera
+        InputMultiplexer multiplexer = new InputMultiplexer();
+        multiplexer.addProcessor(uiStage);
+        multiplexer.addProcessor(cameraController);
+        Gdx.input.setInputProcessor(multiplexer);
 
         spawnDemoMolecules();
+    }
+    
+    private void createUI() {
+        uiStage = new Stage(new ScreenViewport());
+        
+        // Create a simple skin programmatically
+        skin = createSkin();
+        
+        Table table = new Table();
+        table.setFillParent(true);
+        table.top().left();
+        table.pad(10);
+        
+        // Yellow friction slider
+        Label frictionLabel = new Label("Yellow Friction: 0.00", skin);
+        Slider frictionSlider = new Slider(0f, 5f, 0.1f, false, skin);
+        frictionSlider.setValue(yellowFriction);
+        
+        frictionSlider.addListener(new ChangeListener() {
+            @Override
+            public void changed(ChangeEvent event, Actor actor) {
+                yellowFriction = frictionSlider.getValue();
+                frictionLabel.setText(String.format("Yellow Friction: %.2f", yellowFriction));
+                applyYellowFriction();
+            }
+        });
+        
+        table.add(frictionLabel).padBottom(5).row();
+        table.add(frictionSlider).width(200).row();
+        
+        uiStage.addActor(table);
+    }
+    
+    /**
+     * Create a simple UI skin programmatically without external files.
+     */
+    private Skin createSkin() {
+        Skin skin = new Skin();
+        
+        // Create a simple 1x1 white texture for UI elements
+        com.badlogic.gdx.graphics.Pixmap pixmap = new com.badlogic.gdx.graphics.Pixmap(1, 1, com.badlogic.gdx.graphics.Pixmap.Format.RGBA8888);
+        pixmap.setColor(com.badlogic.gdx.graphics.Color.WHITE);
+        pixmap.fill();
+        skin.add("white", new com.badlogic.gdx.graphics.Texture(pixmap));
+        pixmap.dispose();
+        
+        // Create BitmapFont
+        com.badlogic.gdx.graphics.g2d.BitmapFont font = new com.badlogic.gdx.graphics.g2d.BitmapFont();
+        font.getData().setScale(1.2f);
+        skin.add("default", font);
+        
+        // Label style
+        Label.LabelStyle labelStyle = new Label.LabelStyle();
+        labelStyle.font = font;
+        labelStyle.fontColor = com.badlogic.gdx.graphics.Color.WHITE;
+        skin.add("default", labelStyle);
+        
+        // Slider style
+        Slider.SliderStyle sliderStyle = new Slider.SliderStyle();
+        com.badlogic.gdx.scenes.scene2d.utils.TextureRegionDrawable whiteDrawable = new com.badlogic.gdx.scenes.scene2d.utils.TextureRegionDrawable(
+            new com.badlogic.gdx.graphics.g2d.TextureRegion(skin.get("white", com.badlogic.gdx.graphics.Texture.class))
+        );
+        
+        // Background
+        com.badlogic.gdx.scenes.scene2d.utils.Drawable background = whiteDrawable.tint(new com.badlogic.gdx.graphics.Color(0.3f, 0.3f, 0.3f, 1f));
+        sliderStyle.background = background;
+        
+        // Knob
+        com.badlogic.gdx.scenes.scene2d.utils.Drawable knob = whiteDrawable.tint(new com.badlogic.gdx.graphics.Color(1f, 0.9f, 0.2f, 1f));
+        sliderStyle.knob = knob;
+        sliderStyle.knob.setMinWidth(12);
+        sliderStyle.knob.setMinHeight(20);
+        
+        skin.add("default-horizontal", sliderStyle);
+        
+        return skin;
+    }
+    
+    /**
+     * Apply friction setting to all yellow particles.
+     */
+    private void applyYellowFriction() {
+        Array<Particle> particles = physicsWorld.getActiveParticles();
+        for (Particle particle : particles) {
+            if (particle.getType() == ParticleType.YELLOW) {
+                particle.getBody().setLinearDamping(yellowFriction);
+            }
+        }
+    }
+    
+    /**
+     * Restart the simulation by clearing all particles and bonds, then spawning new molecules.
+     */
+    private void restartSimulation() {
+        System.out.println("Restarting simulation...");
+        
+        // Clear all existing particles and bonds
+        Array<Particle> particles = physicsWorld.getActiveParticles();
+        Array<Bond> bonds = physicsWorld.getActiveBonds();
+        
+        // Copy to temporary arrays to avoid concurrent modification
+        Array<Particle> particlesToRemove = new Array<>(particles);
+        Array<Bond> bondsToRemove = new Array<>(bonds);
+        
+        for (Bond bond : bondsToRemove) {
+            physicsWorld.destroyBond(bond);
+        }
+        
+        for (Particle particle : particlesToRemove) {
+            physicsWorld.destroyParticle(particle);
+        }
+        
+        // Reset accumulator
+        accumulator = 0f;
+        
+        // Reseed random for variety
+        typeRandom.setSeed(System.currentTimeMillis());
+        
+        // Spawn new demo molecules
+        spawnDemoMolecules();
+        
+        System.out.println("Simulation restarted!");
     }
 
     @Override
     public void render() {
-        // Toggle reactions with 'R' key
+        // Restart simulation with 'R' key
         if (Gdx.input.isKeyJustPressed(Input.Keys.R)) {
-            enableReactions = !enableReactions;
-            System.out.println("Reactions " + (enableReactions ? "enabled" : "disabled"));
+            restartSimulation();
+        }
+        
+        // Toggle UI visibility with 'H' key
+        if (Gdx.input.isKeyJustPressed(Input.Keys.H)) {
+            uiVisible = !uiVisible;
+            System.out.println("UI " + (uiVisible ? "visible" : "hidden"));
         }
         
         float delta = Gdx.graphics.getDeltaTime();
@@ -87,6 +238,17 @@ public class AutomatonGame extends ApplicationAdapter {
 
         bondRenderer.render(physicsWorld.getActiveBonds(), camera);
         particleRenderer.render(physicsWorld.getActiveParticles(), camera);
+        
+        // Render UI on top if visible
+        if (uiVisible) {
+            uiStage.act(delta);
+            uiStage.draw();
+        }
+    }
+    
+    @Override
+    public void resize(int width, int height) {
+        uiStage.getViewport().update(width, height, true);
     }
 
     @Override
@@ -94,6 +256,8 @@ public class AutomatonGame extends ApplicationAdapter {
         bondRenderer.dispose();
         particleRenderer.dispose();
         physicsWorld.dispose();
+        uiStage.dispose();
+        skin.dispose();
     }
 
     private void spawnDemoMolecules() {
@@ -198,8 +362,14 @@ public class AutomatonGame extends ApplicationAdapter {
         float vy = MathUtils.random(-3f, 3f);
         
         tmpVec.set(centerX, centerY);
-        Particle particle = physicsWorld.spawnParticle(randomParticleType(), tmpVec, 0.4f, 1f);
+        ParticleType type = randomParticleType();
+        Particle particle = physicsWorld.spawnParticle(type, tmpVec, 0.4f, 1f);
         particle.getBody().setLinearVelocity(vx, vy);
+        
+        // Apply yellow friction if applicable
+        if (type == ParticleType.YELLOW) {
+            particle.getBody().setLinearDamping(yellowFriction);
+        }
     }
 
     /**
@@ -221,8 +391,12 @@ public class AutomatonGame extends ApplicationAdapter {
         
         // First node at center
         tmpVec.set(centerX, centerY);
-        nodes[0] = physicsWorld.spawnParticle(randomParticleType(), tmpVec, 0.4f, 1f);
+        ParticleType type0 = randomParticleType();
+        nodes[0] = physicsWorld.spawnParticle(type0, tmpVec, 0.4f, 1f);
         nodes[0].getBody().setLinearVelocity(vx, vy);
+        if (type0 == ParticleType.YELLOW) {
+            nodes[0].getBody().setLinearDamping(yellowFriction);
+        }
         
         // Place remaining nodes at angles
         float x = centerX;
@@ -235,8 +409,12 @@ public class AutomatonGame extends ApplicationAdapter {
             y += MathUtils.sin(currentAngle) * bondLength;
             
             tmpVec.set(x, y);
-            nodes[i] = physicsWorld.spawnParticle(randomParticleType(), tmpVec, 0.4f, 1f);
+            ParticleType type = randomParticleType();
+            nodes[i] = physicsWorld.spawnParticle(type, tmpVec, 0.4f, 1f);
             nodes[i].getBody().setLinearVelocity(vx, vy);
+            if (type == ParticleType.YELLOW) {
+                nodes[i].getBody().setLinearDamping(yellowFriction);
+            }
         }
         
         // Bond adjacent nodes
@@ -265,8 +443,12 @@ public class AutomatonGame extends ApplicationAdapter {
         
         // Central node
         tmpVec.set(centerX, centerY);
-        Particle center = physicsWorld.spawnParticle(randomParticleType(), tmpVec, 0.4f, 1f);
+        ParticleType centerType = randomParticleType();
+        Particle center = physicsWorld.spawnParticle(centerType, tmpVec, 0.4f, 1f);
         center.getBody().setLinearVelocity(vx, vy);
+        if (centerType == ParticleType.YELLOW) {
+            center.getBody().setLinearDamping(yellowFriction);
+        }
         nodes.add(center);
         
         // Create branches radiating from center at various angles
@@ -292,8 +474,12 @@ public class AutomatonGame extends ApplicationAdapter {
                 y += MathUtils.sin(angle) * bondLength;
                 
                 tmpVec.set(x, y);
-                Particle node = physicsWorld.spawnParticle(randomParticleType(), tmpVec, 0.4f, 1f);
+                ParticleType nodeType = randomParticleType();
+                Particle node = physicsWorld.spawnParticle(nodeType, tmpVec, 0.4f, 1f);
                 node.getBody().setLinearVelocity(vx, vy);
+                if (nodeType == ParticleType.YELLOW) {
+                    node.getBody().setLinearDamping(yellowFriction);
+                }
                 nodes.add(node);
                 
                 // Bond to previous in branch
@@ -320,8 +506,12 @@ public class AutomatonGame extends ApplicationAdapter {
             float angle = i * MathUtils.PI2 / 3f;
             tmpVec.set(centerX + MathUtils.cos(angle) * radius, 
                       centerY + MathUtils.sin(angle) * radius);
-            nodes[i] = physicsWorld.spawnParticle(randomParticleType(), tmpVec, 0.4f, 1f);
+            ParticleType type = randomParticleType();
+            nodes[i] = physicsWorld.spawnParticle(type, tmpVec, 0.4f, 1f);
             nodes[i].getBody().setLinearVelocity(vx, vy);
+            if (type == ParticleType.YELLOW) {
+                nodes[i].getBody().setLinearDamping(yellowFriction);
+            }
         }
         
         // Bond all three nodes
