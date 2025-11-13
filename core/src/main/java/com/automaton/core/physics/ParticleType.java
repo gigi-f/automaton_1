@@ -57,6 +57,7 @@ public enum ParticleType {
      * Check if this particle type can bond with another type based on logic gate rules.
      * Gates bond with logic states based on their truth tables.
      * Logic states bond with gates and other logic states.
+     * Energy-rich particles can still bond but are also consumable.
      */
     public boolean canBondWith(ParticleType other) {
         // If both are logic states, they can always bond

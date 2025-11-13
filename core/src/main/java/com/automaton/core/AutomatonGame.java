@@ -132,6 +132,60 @@ public class AutomatonGame extends ApplicationAdapter {
         table.add(violenceLabel).padBottom(5).row();
         table.add(violenceSlider).width(200).row();
         
+        // Energy Decay Rate slider
+        table.add(new Label("", skin)).padTop(15).row(); // Spacer
+        Label energyDecayLabel = new Label("Energy Decay: 0.10/s", skin);
+        Slider energyDecaySlider = new Slider(0f, 2f, 0.05f, false, skin);
+        energyDecaySlider.setValue(physicsWorld.getEnergyDecayRate());
+        
+        energyDecaySlider.addListener(new ChangeListener() {
+            @Override
+            public void changed(ChangeEvent event, Actor actor) {
+                float rate = energyDecaySlider.getValue();
+                physicsWorld.setEnergyDecayRate(rate);
+                energyDecayLabel.setText(String.format("Energy Decay: %.2f/s", rate));
+            }
+        });
+        
+        table.add(energyDecayLabel).padBottom(5).row();
+        table.add(energyDecaySlider).width(200).row();
+        
+        // Bond Energy Cost slider
+        table.add(new Label("", skin)).padTop(15).row(); // Spacer
+        Label bondCostLabel = new Label("Bond Cost: 0.50/s", skin);
+        Slider bondCostSlider = new Slider(0f, 5f, 0.1f, false, skin);
+        bondCostSlider.setValue(physicsWorld.getBondEnergyCost());
+        
+        bondCostSlider.addListener(new ChangeListener() {
+            @Override
+            public void changed(ChangeEvent event, Actor actor) {
+                float cost = bondCostSlider.getValue();
+                physicsWorld.setBondEnergyCost(cost);
+                bondCostLabel.setText(String.format("Bond Cost: %.2f/s", cost));
+            }
+        });
+        
+        table.add(bondCostLabel).padBottom(5).row();
+        table.add(bondCostSlider).width(200).row();
+        
+        // Metabolism Rate slider (bond-generated food)
+        table.add(new Label("", skin)).padTop(15).row(); // Spacer
+        Label metabolismLabel = new Label("Metabolism: 2.00/s", skin);
+        Slider metabolismSlider = new Slider(0f, 10f, 0.5f, false, skin);
+        metabolismSlider.setValue(physicsWorld.getFoodSpawnRate());
+        
+        metabolismSlider.addListener(new ChangeListener() {
+            @Override
+            public void changed(ChangeEvent event, Actor actor) {
+                float rate = metabolismSlider.getValue();
+                physicsWorld.setFoodSpawnRate(rate);
+                metabolismLabel.setText(String.format("Metabolism: %.2f/s", rate));
+            }
+        });
+        
+        table.add(metabolismLabel).padBottom(5).row();
+        table.add(metabolismSlider).width(200).row();
+        
         uiStage.addActor(table);
     }
     

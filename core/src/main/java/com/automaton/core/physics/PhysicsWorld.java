@@ -31,9 +31,17 @@ public final class PhysicsWorld implements Disposable {
     private final UnionFind unionFind;
     private final BondProperties bondProperties;
     private float reactionViolenceMultiplier;
+    private float energyDecayRate;
+    private float bondEnergyCost;
+    private float foodSpawnRate;
+    private float foodSpawnAccumulator;
 
     public PhysicsWorld(Vector2 gravity, int initialParticleCapacity) {
-        this.reactionViolenceMultiplier = 1.0f;  // Default: normal violence
+        this.reactionViolenceMultiplier = 0.4f;  // Default: 40% violence (reduced from 1.0)
+        this.energyDecayRate = 0.1f;  // Default: 0.1 energy/second decay
+        this.bondEnergyCost = 0.5f;  // Default: 0.5 energy/second per bond
+        this.foodSpawnRate = 2f;  // Default: 2 food particles per second
+        this.foodSpawnAccumulator = 0f;
         this.world = new World(gravity, true);
         this.particlePool = new ParticlePool(initialParticleCapacity, Integer.MAX_VALUE);
         this.bondPool = new BondPool(initialParticleCapacity * 2, Integer.MAX_VALUE);
@@ -55,6 +63,30 @@ public final class PhysicsWorld implements Disposable {
     
     public float getReactionViolenceMultiplier() {
         return reactionViolenceMultiplier;
+    }
+    
+    public void setEnergyDecayRate(float rate) {
+        this.energyDecayRate = Math.max(0f, rate);
+    }
+    
+    public float getEnergyDecayRate() {
+        return energyDecayRate;
+    }
+    
+    public void setBondEnergyCost(float cost) {
+        this.bondEnergyCost = Math.max(0f, cost);
+    }
+    
+    public float getBondEnergyCost() {
+        return bondEnergyCost;
+    }
+    
+    public void setFoodSpawnRate(float rate) {
+        this.foodSpawnRate = Math.max(0f, rate);
+    }
+    
+    public float getFoodSpawnRate() {
+        return foodSpawnRate;
     }
 
     public World getWorld() {
@@ -131,7 +163,9 @@ public final class PhysicsWorld implements Disposable {
         shape.dispose();
 
         Particle particle = particlePool.obtain();
-        particle.init(body, type, collisionRadius, visualRadius, 0f);
+        // Initialize with random energy between 50-100
+        float initialEnergy = 50f + MathUtils.random(50f);
+        particle.init(body, type, collisionRadius, visualRadius, initialEnergy);
         activeParticles.add(particle);
         
         // Add to union-find as its own component
@@ -251,6 +285,18 @@ public final class PhysicsWorld implements Disposable {
     }
 
     public void step(float delta, int velocityIterations, int positionIterations) {
+        // Spawn food particles at configured rate
+        spawnFoodParticles(delta);
+        
+        // Process energy absorption from food particles
+        processEnergyAbsorption(delta);
+        
+        // Apply energy decay and bond costs
+        applyEnergyMechanics(delta);
+        
+        // Remove particles that ran out of energy
+        removeDeadParticles();
+        
         // Check for crossing bonds within same molecule and break them
         detectAndBreakCrossingBonds();
         
@@ -266,6 +312,227 @@ public final class PhysicsWorld implements Disposable {
         
         // Update spatial grid after physics step
         spatialGrid.update(activeParticles);
+    }
+    
+    /**
+     * Process metabolic byproducts from active bonds.
+     * Certain bond combinations create energy-rich particles as byproducts.
+     * This creates a metabolism-like system where bonds produce consumable energy.
+     */
+    private void spawnFoodParticles(float delta) {
+        if (foodSpawnRate <= 0) return;
+        
+        foodSpawnAccumulator += delta;
+        float spawnInterval = 1f / foodSpawnRate;  // Seconds between spawns
+        
+        while (foodSpawnAccumulator >= spawnInterval) {
+            foodSpawnAccumulator -= spawnInterval;
+            
+            // Find productive bonds (bonds that generate energy byproducts)
+            Array<Bond> productiveBonds = new Array<>();
+            for (Bond bond : activeBonds) {
+                if (!bond.isActive()) continue;
+                if (isProductiveBond(bond)) {
+                    productiveBonds.add(bond);
+                }
+            }
+            
+            if (productiveBonds.size == 0) continue;
+            
+            // Pick a random productive bond
+            Bond selectedBond = productiveBonds.get(MathUtils.random(productiveBonds.size - 1));
+            
+            // Spawn energy-rich particle near the bond midpoint
+            Particle a = selectedBond.getParticleA();
+            Particle b = selectedBond.getParticleB();
+            Vector2 midpoint = new Vector2(a.getPosition()).add(b.getPosition()).scl(0.5f);
+            
+            // Add some random offset
+            float offsetX = MathUtils.random(-2f, 2f);
+            float offsetY = MathUtils.random(-2f, 2f);
+            midpoint.add(offsetX, offsetY);
+            
+            // Determine particle type based on bond types
+            ParticleType byproductType = getByproductType(a.getType(), b.getType());
+            
+            // Create energy-rich particle
+            Particle byproduct = spawnParticle(byproductType, midpoint, 0.5f, 1f);
+            byproduct.setEnergy(60f);  // Rich in energy
+            byproduct.setEnergyRich(true);  // Mark as consumable
+            
+            // Give it velocity away from bond (ejection)
+            Vector2 direction = new Vector2(midpoint).sub(a.getPosition()).nor();
+            float vx = direction.x * MathUtils.random(8f, 15f) + MathUtils.random(-3f, 3f);
+            float vy = direction.y * MathUtils.random(8f, 15f) + MathUtils.random(-3f, 3f);
+            byproduct.getBody().setLinearVelocity(vx, vy);
+        }
+    }
+    
+    /**
+     * Determine if a bond produces energy byproducts.
+     * Productive bonds: different types, especially logic states + gates.
+     */
+    private boolean isProductiveBond(Bond bond) {
+        ParticleType typeA = bond.getParticleA().getType();
+        ParticleType typeB = bond.getParticleB().getType();
+        
+        // Same type bonds don't produce byproducts
+        if (typeA == typeB) return false;
+        
+        // Logic states bonded to gates are productive
+        if (typeA.isLogicState() && typeB.isGate()) return true;
+        if (typeB.isLogicState() && typeA.isGate()) return true;
+        
+        // Different logic states are productive
+        if (typeA.isLogicState() && typeB.isLogicState()) return true;
+        
+        // Different gates together are moderately productive
+        if (typeA.isGate() && typeB.isGate()) {
+            return MathUtils.randomBoolean(0.3f); // 30% chance
+        }
+        
+        return false;
+    }
+    
+    /**
+     * Determine the particle type of the metabolic byproduct based on parent types.
+     * Creates interesting combinations - e.g., TRUE+AND -> FALSE, NOT+OR -> TRUE
+     */
+    private ParticleType getByproductType(ParticleType typeA, ParticleType typeB) {
+        // TRUE + FALSE -> Random gate
+        if ((typeA == ParticleType.TRUE && typeB == ParticleType.FALSE) ||
+            (typeA == ParticleType.FALSE && typeB == ParticleType.TRUE)) {
+            ParticleType[] gates = {ParticleType.AND, ParticleType.OR, ParticleType.XOR};
+            return gates[MathUtils.random(gates.length - 1)];
+        }
+        
+        // TRUE + Gate -> FALSE (consumption/inhibition)
+        if (typeA == ParticleType.TRUE && typeB.isGate()) return ParticleType.FALSE;
+        if (typeB == ParticleType.TRUE && typeA.isGate()) return ParticleType.FALSE;
+        
+        // FALSE + Gate -> TRUE (activation)
+        if (typeA == ParticleType.FALSE && typeB.isGate()) return ParticleType.TRUE;
+        if (typeB == ParticleType.FALSE && typeA.isGate()) return ParticleType.TRUE;
+        
+        // Gate + Gate -> Logic state (random)
+        if (typeA.isGate() && typeB.isGate()) {
+            return MathUtils.randomBoolean() ? ParticleType.TRUE : ParticleType.FALSE;
+        }
+        
+        // Default: opposite of first type if logic state
+        if (typeA.isLogicState()) {
+            return typeA == ParticleType.TRUE ? ParticleType.FALSE : ParticleType.TRUE;
+        }
+        
+        return ParticleType.TRUE;
+    }
+    
+    /**
+     * Process energy absorption when particles contact energy-rich particles.
+     * Energy-rich particles transfer energy and are consumed when depleted.
+     */
+    private void processEnergyAbsorption(float delta) {
+        float absorptionRadius = 1.5f;  // Distance for energy transfer
+        float transferRate = 30f;  // Energy units per second
+        
+        Array<Particle> foodToRemove = new Array<>();
+        
+        for (Particle food : activeParticles) {
+            if (!food.isActive() || !food.isEnergyRich()) continue;
+            if (food.getEnergy() <= 0) {
+                foodToRemove.add(food);
+                continue;
+            }
+            
+            // Find nearby particles that can absorb energy
+            Array<Particle> nearbyParticles = spatialGrid.queryRadius(
+                food.getPosition().x, food.getPosition().y, absorptionRadius);
+            
+            for (Particle consumer : nearbyParticles) {
+                if (!consumer.isActive() || consumer == food) continue;
+                if (consumer.isEnergyRich()) continue; // Energy-rich particles don't consume each other
+                
+                // Check if close enough for energy transfer
+                float distSq = food.getPosition().dst2(consumer.getPosition());
+                if (distSq < absorptionRadius * absorptionRadius) {
+                    // Transfer energy from food to consumer
+                    float transferAmount = transferRate * delta;
+                    float actualTransfer = Math.min(transferAmount, food.getEnergy());
+                    
+                    food.consumeEnergy(actualTransfer);
+                    consumer.addEnergy(actualTransfer);
+                    
+                    // Mark as depleted (will be cleaned up by removeDeadParticles)
+                    if (food.getEnergy() <= 0) {
+                        break;
+                    }
+                }
+            }
+        }
+        
+        // Note: Depleted food particles (energy = 0) are removed by removeDeadParticles()
+    }
+    
+    /**
+     * Apply energy decay and bond energy costs to all particles.
+     */
+    private void applyEnergyMechanics(float delta) {
+        // Count bonds per particle
+        int[] bondCount = new int[activeParticles.size];
+        for (Bond bond : activeBonds) {
+            if (!bond.isActive()) continue;
+            
+            for (int i = 0; i < activeParticles.size; i++) {
+                Particle p = activeParticles.get(i);
+                if (p == bond.getParticleA() || p == bond.getParticleB()) {
+                    bondCount[i]++;
+                }
+            }
+        }
+        
+        // Apply energy decay and bond costs
+        for (int i = 0; i < activeParticles.size; i++) {
+            Particle particle = activeParticles.get(i);
+            if (!particle.isActive()) continue;
+            
+            // Base energy decay
+            float decay = energyDecayRate * delta;
+            
+            // Additional cost per bond
+            float bondCost = bondEnergyCost * bondCount[i] * delta;
+            
+            particle.consumeEnergy(decay + bondCost);
+        }
+    }
+    
+    /**
+     * Remove particles that have zero energy.
+     */
+    private void removeDeadParticles() {
+        Array<Particle> particlesToRemove = new Array<>();
+        
+        for (Particle particle : activeParticles) {
+            if (particle.isActive() && particle.getEnergy() <= 0f) {
+                particlesToRemove.add(particle);
+            }
+        }
+        
+        for (Particle particle : particlesToRemove) {
+            // Remove all bonds connected to this particle first
+            Array<Bond> bondsToRemove = new Array<>();
+            for (Bond bond : activeBonds) {
+                if (bond.isActive() && 
+                    (bond.getParticleA() == particle || bond.getParticleB() == particle)) {
+                    bondsToRemove.add(bond);
+                }
+            }
+            
+            for (Bond bond : bondsToRemove) {
+                destroyBond(bond, false);  // No violent reaction on energy death
+            }
+            
+            destroyParticle(particle);
+        }
     }
 
     /**

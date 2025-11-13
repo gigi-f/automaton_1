@@ -72,6 +72,12 @@ public final class Bond implements Pool.Poolable {
         if (!active || !other.active) return false;
         if (this == other) return false;
         
+        // Safety check: ensure particles are still active
+        if (!particleA.isActive() || !particleB.isActive() ||
+            !other.particleA.isActive() || !other.particleB.isActive()) {
+            return false;
+        }
+        
         // Don't check bonds that share a particle
         if (particleA == other.particleA || particleA == other.particleB ||
             particleB == other.particleA || particleB == other.particleB) {
