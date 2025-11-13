@@ -49,8 +49,9 @@ public class AutomatonGame extends ApplicationAdapter {
     // UI
     private Stage uiStage;
     private Skin skin;
-    private float yellowFriction = 0.0f;  // Friction for yellow particles
+    private float yellowFriction = 0.0f;  // Friction for XOR gate particles (yellow colored)
     private boolean uiVisible = true;  // Toggle with 'H' key
+    private float startingVelocityRange = 24f; // Initial velocity range for particles
 
     @Override
     public void create() {
@@ -96,8 +97,8 @@ public class AutomatonGame extends ApplicationAdapter {
         table.top().left();
         table.pad(10);
         
-        // Yellow friction slider
-        Label frictionLabel = new Label("Yellow Friction: 0.00", skin);
+        // XOR gate friction slider (XOR is yellow colored)
+        Label frictionLabel = new Label("XOR Friction: 0.00", skin);
         Slider frictionSlider = new Slider(0f, 5f, 0.1f, false, skin);
         frictionSlider.setValue(yellowFriction);
         
@@ -105,7 +106,7 @@ public class AutomatonGame extends ApplicationAdapter {
             @Override
             public void changed(ChangeEvent event, Actor actor) {
                 yellowFriction = frictionSlider.getValue();
-                frictionLabel.setText(String.format("Yellow Friction: %.2f", yellowFriction));
+                frictionLabel.setText(String.format("XOR Friction: %.2f", yellowFriction));
                 applyYellowFriction();
             }
         });
@@ -162,12 +163,12 @@ public class AutomatonGame extends ApplicationAdapter {
     }
     
     /**
-     * Apply friction setting to all yellow particles.
+     * Apply friction setting to all XOR gate particles.
      */
     private void applyYellowFriction() {
         Array<Particle> particles = physicsWorld.getActiveParticles();
         for (Particle particle : particles) {
-            if (particle.getType() == ParticleType.YELLOW) {
+            if (particle.getType() == ParticleType.XOR) {
                 particle.getBody().setLinearDamping(yellowFriction);
             }
         }
@@ -259,6 +260,15 @@ public class AutomatonGame extends ApplicationAdapter {
         uiStage.dispose();
         skin.dispose();
     }
+    
+    /**
+     * Get the BondProperties instance for UI slider control.
+     * All bond multiplier fields are public and can be directly modified.
+     * Example: getBondProperties().trueTrueLengthMult = 2.0f;
+     */
+    public com.automaton.core.physics.BondProperties getBondProperties() {
+        return physicsWorld.getBondProperties();
+    }
 
     private void spawnDemoMolecules() {
         // Spawn varied molecules (mols) with random initial velocities
@@ -339,16 +349,29 @@ public class AutomatonGame extends ApplicationAdapter {
     }
 
     /**
-     * Get a random particle type (R, B, or Y).
+     * Get a random particle type (logic states and gates).
      */
     private ParticleType randomParticleType() {
-        int choice = typeRandom.nextInt(3);
-        switch (choice) {
-            case 0: return ParticleType.RED;
-            case 1: return ParticleType.BLUE;
-            case 2: return ParticleType.YELLOW;
-            default: return ParticleType.RED;
-        }
+        ParticleType[] types = ParticleType.values();
+        return types[typeRandom.nextInt(types.length)];
+    }
+    
+    /**
+     * Get a random logic state (TRUE or FALSE).
+     */
+    private ParticleType randomLogicState() {
+        return typeRandom.nextBoolean() ? ParticleType.TRUE : ParticleType.FALSE;
+    }
+    
+    /**
+     * Get a random logic gate.
+     */
+    private ParticleType randomGate() {
+        ParticleType[] gates = {
+            ParticleType.AND, ParticleType.OR, ParticleType.NOT,
+            ParticleType.NAND, ParticleType.NOR, ParticleType.XOR, ParticleType.XNOR
+        };
+        return gates[typeRandom.nextInt(gates.length)];
     }
 
     /**
@@ -358,16 +381,16 @@ public class AutomatonGame extends ApplicationAdapter {
         if (nodeCount != 1) return;
         
         // Random velocity
-        float vx = MathUtils.random(-3f, 3f);
-        float vy = MathUtils.random(-3f, 3f);
-        
+        float vx = MathUtils.random(-startingVelocityRange, startingVelocityRange);
+        float vy = MathUtils.random(-startingVelocityRange, startingVelocityRange);
+
         tmpVec.set(centerX, centerY);
         ParticleType type = randomParticleType();
         Particle particle = physicsWorld.spawnParticle(type, tmpVec, 0.4f, 1f);
         particle.getBody().setLinearVelocity(vx, vy);
         
-        // Apply yellow friction if applicable
-        if (type == ParticleType.YELLOW) {
+        // Apply XOR gate friction if applicable (XOR is yellow)
+        if (type == ParticleType.XOR) {
             particle.getBody().setLinearDamping(yellowFriction);
         }
     }
@@ -383,8 +406,8 @@ public class AutomatonGame extends ApplicationAdapter {
         float angleVariation = MathUtils.random(30f, 60f) * MathUtils.degreesToRadians;
         
         // Random velocity for whole molecule
-        float vx = MathUtils.random(-3f, 3f);
-        float vy = MathUtils.random(-3f, 3f);
+        float vx = MathUtils.random(-6f, 6f);
+        float vy = MathUtils.random(-6f, 6f);
         
         Particle[] nodes = new Particle[nodeCount];
         float currentAngle = MathUtils.random(0f, MathUtils.PI2);
@@ -394,7 +417,7 @@ public class AutomatonGame extends ApplicationAdapter {
         ParticleType type0 = randomParticleType();
         nodes[0] = physicsWorld.spawnParticle(type0, tmpVec, 0.4f, 1f);
         nodes[0].getBody().setLinearVelocity(vx, vy);
-        if (type0 == ParticleType.YELLOW) {
+        if (type0 == ParticleType.XOR) {
             nodes[0].getBody().setLinearDamping(yellowFriction);
         }
         
@@ -412,7 +435,7 @@ public class AutomatonGame extends ApplicationAdapter {
             ParticleType type = randomParticleType();
             nodes[i] = physicsWorld.spawnParticle(type, tmpVec, 0.4f, 1f);
             nodes[i].getBody().setLinearVelocity(vx, vy);
-            if (type == ParticleType.YELLOW) {
+            if (type == ParticleType.XOR) {
                 nodes[i].getBody().setLinearDamping(yellowFriction);
             }
         }
@@ -436,8 +459,8 @@ public class AutomatonGame extends ApplicationAdapter {
         float bondLength = 1.5f;  // Increased from 0.8f for better visibility
         
         // Random velocity for whole molecule
-        float vx = MathUtils.random(-3f, 3f);
-        float vy = MathUtils.random(-3f, 3f);
+        float vx = MathUtils.random(-6f, 6f);
+        float vy = MathUtils.random(-6f, 6f);
         
         Array<Particle> nodes = new Array<>();
         
@@ -446,7 +469,7 @@ public class AutomatonGame extends ApplicationAdapter {
         ParticleType centerType = randomParticleType();
         Particle center = physicsWorld.spawnParticle(centerType, tmpVec, 0.4f, 1f);
         center.getBody().setLinearVelocity(vx, vy);
-        if (centerType == ParticleType.YELLOW) {
+        if (centerType == ParticleType.XOR) {
             center.getBody().setLinearDamping(yellowFriction);
         }
         nodes.add(center);
@@ -477,7 +500,7 @@ public class AutomatonGame extends ApplicationAdapter {
                 ParticleType nodeType = randomParticleType();
                 Particle node = physicsWorld.spawnParticle(nodeType, tmpVec, 0.4f, 1f);
                 node.getBody().setLinearVelocity(vx, vy);
-                if (nodeType == ParticleType.YELLOW) {
+                if (nodeType == ParticleType.XOR) {
                     node.getBody().setLinearDamping(yellowFriction);
                 }
                 nodes.add(node);
@@ -497,8 +520,8 @@ public class AutomatonGame extends ApplicationAdapter {
         float radius = 1.0f;  // Increased from 0.6f for better spacing
         
         // Random velocity for whole molecule
-        float vx = MathUtils.random(-3f, 3f);
-        float vy = MathUtils.random(-3f, 3f);
+        float vx = MathUtils.random(-6f, 6f);
+        float vy = MathUtils.random(-6f, 6f);
         
         Particle[] nodes = new Particle[3];
         
@@ -509,7 +532,7 @@ public class AutomatonGame extends ApplicationAdapter {
             ParticleType type = randomParticleType();
             nodes[i] = physicsWorld.spawnParticle(type, tmpVec, 0.4f, 1f);
             nodes[i].getBody().setLinearVelocity(vx, vy);
-            if (type == ParticleType.YELLOW) {
+            if (type == ParticleType.XOR) {
                 nodes[i].getBody().setLinearDamping(yellowFriction);
             }
         }

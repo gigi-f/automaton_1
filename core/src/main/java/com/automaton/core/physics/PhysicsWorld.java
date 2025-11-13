@@ -29,6 +29,7 @@ public final class PhysicsWorld implements Disposable {
     private final Array<Bond> activeBonds;
     private final SpatialHashGrid spatialGrid;
     private final UnionFind unionFind;
+    private final BondProperties bondProperties;
 
     public PhysicsWorld(Vector2 gravity, int initialParticleCapacity) {
         this.world = new World(gravity, true);
@@ -39,6 +40,11 @@ public final class PhysicsWorld implements Disposable {
         // Cell size = 2.5 units (typical particle spacing in demo)
         this.spatialGrid = new SpatialHashGrid(2.5f);
         this.unionFind = new UnionFind();
+        this.bondProperties = new BondProperties();
+    }
+    
+    public BondProperties getBondProperties() {
+        return bondProperties;
     }
 
     public World getWorld() {
@@ -144,12 +150,23 @@ public final class PhysicsWorld implements Disposable {
             return null;
         }
         
+        // Get multipliers based on particle types
+        float[] multipliers = bondProperties.getMultipliers(a.getType(), b.getType());
+        float lengthMult = multipliers[0];
+        float stiffnessMult = multipliers[1];
+        float breakMult = multipliers[2];
+        
         Vector2 posA = a.getPosition();
         Vector2 posB = b.getPosition();
-        float restLength = posA.dst(posB);
+        float baseRestLength = posA.dst(posB);
+        
+        // Apply multipliers
+        float restLength = baseRestLength * lengthMult;
+        float finalStiffness = stiffness * stiffnessMult;
+        float finalBreakForce = breakForceThreshold * breakMult;
         
         Bond bond = bondPool.obtain();
-        bond.init(a, b, type, restLength, stiffness, damping, breakForceThreshold);
+        bond.init(a, b, type, restLength, finalStiffness, damping, finalBreakForce);
         activeBonds.add(bond);
         
         // Union components when bond forms

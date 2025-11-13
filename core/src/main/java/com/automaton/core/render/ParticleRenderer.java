@@ -17,8 +17,9 @@ import com.badlogic.gdx.utils.Disposable;
 /**
  * Renders particles using a batched sprite. A small circular texture is generated
  * at runtime to avoid asset dependencies.
- * Particles are colored by their type: RED (cannot bond with BLUE), BLUE (cannot bond with RED),
- * YELLOW (can bond with RED and BLUE, but not with other YELLOW - violent reactions occur).
+ * Particles are colored by their type representing logic gates and states:
+ * - TRUE (green), FALSE (gray) - logic states
+ * - AND (red), OR (orange), NOT (purple), NAND (pink), NOR (cyan), XOR (yellow), XNOR (magenta) - logic gates
  */
 public final class ParticleRenderer implements Disposable {
     private static final int TEXTURE_SIZE = 32;

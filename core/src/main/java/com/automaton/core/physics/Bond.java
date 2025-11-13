@@ -60,6 +60,10 @@ public final class Bond implements Pool.Poolable {
         return restLength;
     }
 
+    public float getBreakForceThreshold() {
+        return breakForceThreshold;
+    }
+
     /**
      * Check if this bond intersects with another bond.
      * Uses line segment intersection test.
