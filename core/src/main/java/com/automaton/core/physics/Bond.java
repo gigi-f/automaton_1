@@ -19,6 +19,7 @@ public final class Bond implements Pool.Poolable {
     private float breakForceThreshold;
     private boolean active;
     private float currentForce;
+    private float age; // Age in seconds since bond creation
 
     private final Vector2 tmpVec = new Vector2();
     private final Vector2 tmpVel = new Vector2();
@@ -34,6 +35,7 @@ public final class Bond implements Pool.Poolable {
         this.breakForceThreshold = breakForceThreshold;
         this.active = true;
         this.currentForce = 0f;
+        this.age = 0f; // Start at age 0
     }
 
     public boolean isActive() {
@@ -62,6 +64,25 @@ public final class Bond implements Pool.Poolable {
 
     public float getBreakForceThreshold() {
         return breakForceThreshold;
+    }
+    
+    public float getAge() {
+        return age;
+    }
+    
+    public void updateAge(float delta) {
+        this.age += delta;
+    }
+    
+    /**
+     * Get the effective break force threshold, reduced by aging.
+     * Bonds become more fragile over time (lose 50% strength after 60 seconds).
+     */
+    public float getEffectiveBreakForce() {
+        // Aging formula: strength = base * (1 - 0.5 * min(age/60, 1))
+        // After 60 seconds, bond is at 50% original strength
+        float agingFactor = 1.0f - (0.5f * Math.min(age / 60f, 1.0f));
+        return breakForceThreshold * agingFactor;
     }
 
     /**
@@ -145,7 +166,8 @@ public final class Bond implements Pool.Poolable {
 
         currentForce = Math.abs(totalForce);
         
-        if (currentForce > breakForceThreshold) {
+        // Use effective break force (reduced by aging)
+        if (currentForce > getEffectiveBreakForce()) {
             return true;
         }
 
@@ -172,5 +194,6 @@ public final class Bond implements Pool.Poolable {
         breakForceThreshold = 0f;
         active = false;
         currentForce = 0f;
+        age = 0f;
     }
 }

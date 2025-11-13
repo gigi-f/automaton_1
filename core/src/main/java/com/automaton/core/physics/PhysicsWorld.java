@@ -30,11 +30,18 @@ public final class PhysicsWorld implements Disposable {
     private final SpatialHashGrid spatialGrid;
     private final UnionFind unionFind;
     private final BondProperties bondProperties;
+    private final EnergyField energyField;
     private float reactionViolenceMultiplier;
     private float energyDecayRate;
     private float bondEnergyCost;
     private float foodSpawnRate;
     private float foodSpawnAccumulator;
+    private float replicationEnergyThreshold;
+    private float replicationCheckInterval;
+    private float replicationCheckAccumulator;
+    private float mutationRate;
+    private float environmentalEnergyRate;
+    private float chemotaxisStrength;
 
     public PhysicsWorld(Vector2 gravity, int initialParticleCapacity) {
         this.reactionViolenceMultiplier = 0.4f;  // Default: 40% violence (reduced from 1.0)
@@ -42,9 +49,18 @@ public final class PhysicsWorld implements Disposable {
         this.bondEnergyCost = 0.5f;  // Default: 0.5 energy/second per bond
         this.foodSpawnRate = 2f;  // Default: 2 food particles per second
         this.foodSpawnAccumulator = 0f;
+        this.replicationEnergyThreshold = 80f;  // Default: need 80+ energy to replicate
+        this.replicationCheckInterval = 2f;  // Default: check every 2 seconds
+        this.replicationCheckAccumulator = 0f;
+        this.mutationRate = 0.1f;  // Default: 10% chance of mutation during replication
+        this.environmentalEnergyRate = 5f;  // Default: 5 energy/sec from field
+        this.chemotaxisStrength = 50f;  // Default: 50 force units for chemotaxis
         this.world = new World(gravity, true);
         this.particlePool = new ParticlePool(initialParticleCapacity, Integer.MAX_VALUE);
         this.bondPool = new BondPool(initialParticleCapacity * 2, Integer.MAX_VALUE);
+        
+        // Initialize energy field (100x56 world, 5 unit cells, 0.3 strength)
+        this.energyField = new EnergyField(100f, 56f, 5f, 0.3f);
         this.activeParticles = new Array<>(false, initialParticleCapacity);
         this.activeBonds = new Array<>(false, initialParticleCapacity * 2);
         // Cell size = 2.5 units (typical particle spacing in demo)
@@ -87,6 +103,42 @@ public final class PhysicsWorld implements Disposable {
     
     public float getFoodSpawnRate() {
         return foodSpawnRate;
+    }
+    
+    public void setReplicationEnergyThreshold(float threshold) {
+        this.replicationEnergyThreshold = Math.max(0f, Math.min(100f, threshold));
+    }
+    
+    public float getReplicationEnergyThreshold() {
+        return replicationEnergyThreshold;
+    }
+    
+    public void setMutationRate(float rate) {
+        this.mutationRate = Math.max(0f, Math.min(1f, rate));
+    }
+    
+    public float getMutationRate() {
+        return mutationRate;
+    }
+    
+    public EnergyField getEnergyField() {
+        return energyField;
+    }
+    
+    public void setEnvironmentalEnergyRate(float rate) {
+        this.environmentalEnergyRate = Math.max(0f, rate);
+    }
+    
+    public float getEnvironmentalEnergyRate() {
+        return environmentalEnergyRate;
+    }
+    
+    public void setChemotaxisStrength(float strength) {
+        this.chemotaxisStrength = Math.max(0f, strength);
+    }
+    
+    public float getChemotaxisStrength() {
+        return chemotaxisStrength;
     }
 
     public World getWorld() {
@@ -294,6 +346,15 @@ public final class PhysicsWorld implements Disposable {
         // Apply energy decay and bond costs
         applyEnergyMechanics(delta);
         
+        // Apply chemotaxis forces (gradient following)
+        applyChemotaxis();
+        
+        // Age particles and bonds
+        updateAging(delta);
+        
+        // Check for replication opportunities
+        processReplication(delta);
+        
         // Remove particles that ran out of energy
         removeDeadParticles();
         
@@ -490,7 +551,7 @@ public final class PhysicsWorld implements Disposable {
             }
         }
         
-        // Apply energy decay and bond costs
+        // Apply energy decay, bond costs, and environmental absorption
         for (int i = 0; i < activeParticles.size; i++) {
             Particle particle = activeParticles.get(i);
             if (!particle.isActive()) continue;
@@ -501,8 +562,226 @@ public final class PhysicsWorld implements Disposable {
             // Additional cost per bond
             float bondCost = bondEnergyCost * bondCount[i] * delta;
             
+            // Environmental energy absorption from spatial field
+            float fieldEnergy = energyField.getEnergyAt(
+                particle.getPosition().x, 
+                particle.getPosition().y
+            );
+            float environmentalGain = fieldEnergy * environmentalEnergyRate * delta;
+            
+            // Net energy change
             particle.consumeEnergy(decay + bondCost);
+            particle.addEnergy(environmentalGain);
         }
+    }
+    
+    /**
+     * Apply chemotaxis forces - particles follow energy gradients.
+     * TRUE particles move toward high energy (positive chemotaxis).
+     * FALSE particles move toward low energy (negative chemotaxis).
+     */
+    private void applyChemotaxis() {
+        if (chemotaxisStrength <= 0f) return;
+        
+        float[] gradient = new float[2];
+        
+        for (Particle particle : activeParticles) {
+            if (!particle.isActive()) continue;
+            
+            // Only logic state particles exhibit chemotaxis
+            if (!particle.getType().isLogicState()) continue;
+            
+            // Get gradient direction at particle position
+            energyField.getGradientDirection(
+                particle.getPosition().x,
+                particle.getPosition().y,
+                gradient
+            );
+            
+            // TRUE moves toward higher energy, FALSE toward lower energy
+            float direction = particle.getType() == ParticleType.TRUE ? 1.0f : -1.0f;
+            
+            float forceX = gradient[0] * chemotaxisStrength * direction;
+            float forceY = gradient[1] * chemotaxisStrength * direction;
+            
+            particle.getBody().applyForceToCenter(forceX, forceY, true);
+        }
+    }
+    
+    /**
+     * Update the age of all active particles and bonds.
+     * Aging causes bonds to become more fragile over time.
+     */
+    private void updateAging(float delta) {
+        // Age particles
+        for (Particle particle : activeParticles) {
+            if (particle.isActive()) {
+                particle.updateAge(delta);
+            }
+        }
+        
+        // Age bonds
+        for (Bond bond : activeBonds) {
+            if (bond.isActive()) {
+                bond.updateAge(delta);
+            }
+        }
+    }
+    
+    /**
+     * Process molecular replication.
+     * Detect simple bonded patterns (pairs, triangles) and replicate them
+     * if conditions are met (high energy, space available).
+     */
+    private void processReplication(float delta) {
+        replicationCheckAccumulator += delta;
+        
+        if (replicationCheckAccumulator < replicationCheckInterval) {
+            return;  // Not time to check yet
+        }
+        
+        replicationCheckAccumulator = 0f;
+        
+        // Find replicable molecules (simple pairs with high energy)
+        for (int i = 0; i < activeBonds.size; i++) {
+            Bond bond = activeBonds.get(i);
+            if (!bond.isActive()) continue;
+            
+            Particle a = bond.getParticleA();
+            Particle b = bond.getParticleB();
+            
+            // Check if both particles have sufficient energy
+            if (a.getEnergy() < replicationEnergyThreshold || 
+                b.getEnergy() < replicationEnergyThreshold) {
+                continue;
+            }
+            
+            // Check if this is a simple pair (each particle has only 1 bond)
+            int bondsA = countBonds(a);
+            int bondsB = countBonds(b);
+            
+            if (bondsA != 1 || bondsB != 1) {
+                continue;  // Not a simple pair
+            }
+            
+            // Find space for replication (nearby but not too close)
+            Vector2 midpoint = new Vector2(a.getPosition()).add(b.getPosition()).scl(0.5f);
+            Vector2 replicaPos = findReplicationSpace(midpoint, 4f, 8f);
+            
+            if (replicaPos == null) {
+                continue;  // No space available
+            }
+            
+            // Replicate the pair!
+            replicatePair(a, b, replicaPos, bond);
+            
+            // Consume significant energy from parents
+            a.consumeEnergy(40f);
+            b.consumeEnergy(40f);
+            
+            break;  // Only one replication per check interval
+        }
+    }
+    
+    /**
+     * Count how many bonds a particle has.
+     */
+    private int countBonds(Particle particle) {
+        int count = 0;
+        for (int i = 0; i < activeBonds.size; i++) {
+            Bond bond = activeBonds.get(i);
+            if (!bond.isActive()) continue;
+            if (bond.getParticleA() == particle || bond.getParticleB() == particle) {
+                count++;
+            }
+        }
+        return count;
+    }
+    
+    /**
+     * Find empty space for replication near a position.
+     * Returns null if no suitable space found.
+     */
+    private Vector2 findReplicationSpace(Vector2 center, float minDist, float maxDist) {
+        // Try 8 directions around the center
+        float[] angles = {0, 45, 90, 135, 180, 225, 270, 315};
+        
+        for (float angle : angles) {
+            float rad = (float) Math.toRadians(angle);
+            float distance = minDist + (maxDist - minDist) * 0.5f;
+            
+            float x = center.x + (float) Math.cos(rad) * distance;
+            float y = center.y + (float) Math.sin(rad) * distance;
+            
+            // Check if position is clear (no particles within 3 units)
+            boolean isClear = true;
+            for (Particle p : activeParticles) {
+                if (!p.isActive()) continue;
+                float dx = p.getPosition().x - x;
+                float dy = p.getPosition().y - y;
+                if (dx * dx + dy * dy < 9f) {  // 3 units radius
+                    isClear = false;
+                    break;
+                }
+            }
+            
+            if (isClear) {
+                return new Vector2(x, y);
+            }
+        }
+        
+        return null;  // No space found
+    }
+    
+    /**
+     * Create a replica of a bonded pair at the specified position.
+     */
+    private void replicatePair(Particle parentA, Particle parentB, Vector2 replicaCenter, Bond parentBond) {
+        // Calculate offset for the two child particles
+        Vector2 direction = new Vector2(parentB.getPosition()).sub(parentA.getPosition());
+        float bondLength = direction.len();
+        direction.nor();
+        
+        Vector2 posA = new Vector2(replicaCenter).sub(direction.scl(bondLength * 0.5f));
+        Vector2 posB = new Vector2(replicaCenter).add(direction.scl(bondLength * 0.5f));
+        
+        // Determine child types (with possible mutation)
+        ParticleType typeA = shouldMutate() ? getRandomParticleType() : parentA.getType();
+        ParticleType typeB = shouldMutate() ? getRandomParticleType() : parentB.getType();
+        
+        // Spawn replica particles (possibly mutated)
+        Particle childA = spawnParticle(typeA, posA, 0.5f, 1f);
+        Particle childB = spawnParticle(typeB, posB, 0.5f, 1f);
+        
+        // Give children moderate starting energy
+        childA.setEnergy(60f);
+        childB.setEnergy(60f);
+        
+        // Create bond between children (copy parent bond properties)
+        createBond(childA, childB, BondType.ELASTIC, 
+                   50f, 2f, parentBond.getBreakForceThreshold());
+        
+        // Give children small random velocity (ejection from parent)
+        Vector2 perpendicular = new Vector2(-direction.y, direction.x);
+        float vx = perpendicular.x * 5f;
+        float vy = perpendicular.y * 5f;
+        childA.getBody().setLinearVelocity(vx, vy);
+        childB.getBody().setLinearVelocity(vx, vy);
+    }
+    
+    /**
+     * Check if mutation should occur based on mutation rate.
+     */
+    private boolean shouldMutate() {
+        return Math.random() < mutationRate;
+    }
+    
+    /**
+     * Get a random particle type for mutation.
+     */
+    private ParticleType getRandomParticleType() {
+        ParticleType[] types = ParticleType.values();
+        return types[(int) (Math.random() * types.length)];
     }
     
     /**

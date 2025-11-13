@@ -49,6 +49,10 @@ public enum ParticleType {
         return !isLogicState();
     }
     
+    public boolean isCatalyst() {
+        return this == NOT || this == XNOR;
+    }
+    
     public boolean getLogicValue() {
         return logicState;
     }

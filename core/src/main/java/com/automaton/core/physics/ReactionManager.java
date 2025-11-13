@@ -21,6 +21,7 @@ public class ReactionManager {
     private float bondFormationRadius = 3.0f;
     private float bondFormationProbability = 0.01f;
     private float bondBreakProbability = 0.001f;
+    private float activationEnergy = 20f;  // Minimum energy required to form bonds
     
     // Default bond properties for reactions
     private BondType defaultBondType = BondType.ELASTIC;
@@ -49,7 +50,9 @@ public class ReactionManager {
     private void processBondFormation() {
         Array<Particle> particles = physicsWorld.getActiveParticles();
         
-        for (Particle particle : particles) {
+        // Use indexed loop to avoid nested iterator issues
+        for (int i = 0; i < particles.size; i++) {
+            Particle particle = particles.get(i);
             if (!particle.isActive()) continue;
             
             // Query nearby particles using spatial hash grid
@@ -70,8 +73,18 @@ public class ReactionManager {
                     continue;
                 }
                 
-                // Stochastic bond formation
-                if (random.nextFloat() < bondFormationProbability) {
+                // Check activation energy - both particles need sufficient energy
+                if (particle.getEnergy() < activationEnergy || 
+                    neighbor.getEnergy() < activationEnergy) {
+                    continue;  // Not enough energy to form bond
+                }
+                
+                // Calculate catalytic boost from nearby catalyst particles
+                float catalyticMultiplier = calculateCatalyticBoost(particle, neighbor);
+                float effectiveProbability = bondFormationProbability * catalyticMultiplier;
+                
+                // Stochastic bond formation (with catalytic boost)
+                if (random.nextFloat() < effectiveProbability) {
                     createReactionBond(particle, neighbor);
                 }
             }
@@ -117,6 +130,46 @@ public class ReactionManager {
     private void createReactionBond(Particle a, Particle b) {
         physicsWorld.createBond(a, b, defaultBondType, defaultStiffness, 
                                 defaultDamping, defaultBreakForce);
+    }
+    
+    /**
+     * Calculate catalytic boost from nearby catalyst particles.
+     * NOT and XNOR particles increase bond formation rates within a radius.
+     * Returns a multiplier (1.0 = no boost, up to 3.0 = 3x boost).
+     */
+    private float calculateCatalyticBoost(Particle a, Particle b) {
+        float catalystRadius = 5.0f;  // Catalyst influence radius
+        float boostPerCatalyst = 0.5f;  // Each catalyst adds 50% to formation rate
+        float maxBoost = 3.0f;  // Maximum 3x boost
+        
+        // Calculate midpoint between the two reacting particles
+        float midX = (a.getPosition().x + b.getPosition().x) * 0.5f;
+        float midY = (a.getPosition().y + b.getPosition().y) * 0.5f;
+        
+        // Count nearby catalyst particles
+        int catalystCount = 0;
+        Array<Particle> allParticles = physicsWorld.getActiveParticles();
+        
+        // Use indexed loop to avoid nested iterator issues
+        for (int i = 0; i < allParticles.size; i++) {
+            Particle particle = allParticles.get(i);
+            if (!particle.isActive()) continue;
+            if (particle == a || particle == b) continue;
+            if (!particle.getType().isCatalyst()) continue;
+            
+            // Check distance to midpoint
+            float dx = particle.getPosition().x - midX;
+            float dy = particle.getPosition().y - midY;
+            float distSq = dx * dx + dy * dy;
+            
+            if (distSq < catalystRadius * catalystRadius) {
+                catalystCount++;
+            }
+        }
+        
+        // Calculate multiplier
+        float multiplier = 1.0f + (catalystCount * boostPerCatalyst);
+        return Math.min(multiplier, maxBoost);
     }
     
     /**
@@ -168,6 +221,14 @@ public class ReactionManager {
     
     public void setBondBreakProbability(float probability) {
         this.bondBreakProbability = MathUtils.clamp(probability, 0f, 1f);
+    }
+    
+    public float getActivationEnergy() {
+        return activationEnergy;
+    }
+    
+    public void setActivationEnergy(float energy) {
+        this.activationEnergy = MathUtils.clamp(energy, 0f, 100f);
     }
     
     public void setDefaultBondProperties(BondType type, float stiffness, 

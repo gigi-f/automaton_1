@@ -186,6 +186,96 @@ public class AutomatonGame extends ApplicationAdapter {
         table.add(metabolismLabel).padBottom(5).row();
         table.add(metabolismSlider).width(200).row();
         
+        // Activation Energy slider (minimum energy for bond formation)
+        table.add(new Label("", skin)).padTop(15).row(); // Spacer
+        Label activationLabel = new Label("Activation: 20", skin);
+        Slider activationSlider = new Slider(0f, 50f, 5f, false, skin);
+        activationSlider.setValue(reactionManager.getActivationEnergy());
+        
+        activationSlider.addListener(new ChangeListener() {
+            @Override
+            public void changed(ChangeEvent event, Actor actor) {
+                float energy = activationSlider.getValue();
+                reactionManager.setActivationEnergy(energy);
+                activationLabel.setText(String.format("Activation: %.0f", energy));
+            }
+        });
+        
+        table.add(activationLabel).padBottom(5).row();
+        table.add(activationSlider).width(200).row();
+        
+        // Replication Energy slider (minimum energy to replicate)
+        table.add(new Label("", skin)).padTop(15).row(); // Spacer
+        Label replicationLabel = new Label("Replication: 80", skin);
+        Slider replicationSlider = new Slider(50f, 100f, 5f, false, skin);
+        replicationSlider.setValue(physicsWorld.getReplicationEnergyThreshold());
+        
+        replicationSlider.addListener(new ChangeListener() {
+            @Override
+            public void changed(ChangeEvent event, Actor actor) {
+                float energy = replicationSlider.getValue();
+                physicsWorld.setReplicationEnergyThreshold(energy);
+                replicationLabel.setText(String.format("Replication: %.0f", energy));
+            }
+        });
+        
+        table.add(replicationLabel).padBottom(5).row();
+        table.add(replicationSlider).width(200).row();
+        
+        // Mutation Rate slider (probability of mutation during replication)
+        table.add(new Label("", skin)).padTop(15).row(); // Spacer
+        Label mutationLabel = new Label("Mutation: 10%", skin);
+        Slider mutationSlider = new Slider(0f, 0.5f, 0.05f, false, skin);
+        mutationSlider.setValue(physicsWorld.getMutationRate());
+        
+        mutationSlider.addListener(new ChangeListener() {
+            @Override
+            public void changed(ChangeEvent event, Actor actor) {
+                float rate = mutationSlider.getValue();
+                physicsWorld.setMutationRate(rate);
+                mutationLabel.setText(String.format("Mutation: %.0f%%", rate * 100));
+            }
+        });
+        
+        table.add(mutationLabel).padBottom(5).row();
+        table.add(mutationSlider).width(200).row();
+        
+        // Environmental Energy slider (absorption rate from field)
+        table.add(new Label("", skin)).padTop(15).row(); // Spacer
+        Label envEnergyLabel = new Label("Field Energy: 5.0/s", skin);
+        Slider envEnergySlider = new Slider(0f, 20f, 1f, false, skin);
+        envEnergySlider.setValue(physicsWorld.getEnvironmentalEnergyRate());
+        
+        envEnergySlider.addListener(new ChangeListener() {
+            @Override
+            public void changed(ChangeEvent event, Actor actor) {
+                float rate = envEnergySlider.getValue();
+                physicsWorld.setEnvironmentalEnergyRate(rate);
+                envEnergyLabel.setText(String.format("Field Energy: %.1f/s", rate));
+            }
+        });
+        
+        table.add(envEnergyLabel).padBottom(5).row();
+        table.add(envEnergySlider).width(200).row();
+        
+        // Chemotaxis Strength slider (gradient following force)
+        table.add(new Label("", skin)).padTop(15).row(); // Spacer
+        Label chemotaxisLabel = new Label("Chemotaxis: 50", skin);
+        Slider chemotaxisSlider = new Slider(0f, 200f, 10f, false, skin);
+        chemotaxisSlider.setValue(physicsWorld.getChemotaxisStrength());
+        
+        chemotaxisSlider.addListener(new ChangeListener() {
+            @Override
+            public void changed(ChangeEvent event, Actor actor) {
+                float strength = chemotaxisSlider.getValue();
+                physicsWorld.setChemotaxisStrength(strength);
+                chemotaxisLabel.setText(String.format("Chemotaxis: %.0f", strength));
+            }
+        });
+        
+        table.add(chemotaxisLabel).padBottom(5).row();
+        table.add(chemotaxisSlider).width(200).row();
+        
         uiStage.addActor(table);
     }
     

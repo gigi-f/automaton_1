@@ -37,8 +37,8 @@ public final class BondRenderer implements Disposable {
             Vector2 posA = bond.getParticleA().getPosition();
             Vector2 posB = bond.getParticleB().getPosition();
             
-            // Calculate color based on break force threshold
-            float breakForce = bond.getBreakForceThreshold();
+            // Calculate color based on EFFECTIVE break force (includes aging)
+            float breakForce = bond.getEffectiveBreakForce();
             getColorForStrength(breakForce, tmpColor);
             shapeRenderer.setColor(tmpColor);
             
