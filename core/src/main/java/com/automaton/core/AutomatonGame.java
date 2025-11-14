@@ -355,6 +355,25 @@ public class AutomatonGame extends ApplicationAdapter {
         table.add(chemotaxisLabel).padBottom(5).row();
         table.add(chemotaxisSlider).width(200).row();
         
+        // Mitosis Threshold slider (maximum molecule size before division)
+        table.add(new Label("", skin)).padTop(15).row(); // Spacer
+        Label mitosisLabel = new Label("Mitosis Size: 25", skin);
+        mitosisLabel.addListener(createTooltip("Maximum number of particles in a molecule before it divides (mitosis). Higher values allow larger structures.", skin));
+        Slider mitosisSlider = new Slider(10f, 50f, 5f, false, skin);
+        mitosisSlider.setValue(physicsWorld.getMitosisThreshold());
+        
+        mitosisSlider.addListener(new ChangeListener() {
+            @Override
+            public void changed(ChangeEvent event, Actor actor) {
+                int threshold = (int) mitosisSlider.getValue();
+                physicsWorld.setMitosisThreshold(threshold);
+                mitosisLabel.setText(String.format("Mitosis Size: %d", threshold));
+            }
+        });
+        
+        table.add(mitosisLabel).padBottom(5).row();
+        table.add(mitosisSlider).width(200).row();
+        
         // Create scroll pane for the content
         ScrollPane scrollPane = new ScrollPane(contentTable, skin);
         scrollPane.setFadeScrollBars(false);

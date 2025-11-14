@@ -45,6 +45,9 @@ public final class PhysicsWorld implements Disposable {
     private float mutationRate;
     private float environmentalEnergyRate;
     private float chemotaxisStrength;
+    private int mitosisThreshold;  // Maximum molecule size before division
+    private float mitosisCheckInterval;
+    private float mitosisCheckAccumulator;
 
     public PhysicsWorld(Vector2 gravity, int initialParticleCapacity) {
         this.reactionViolenceMultiplier = 0.4f;  // Default: 40% violence (reduced from 1.0)
@@ -58,6 +61,9 @@ public final class PhysicsWorld implements Disposable {
         this.mutationRate = 0.1f;  // Default: 10% chance of mutation during replication
         this.environmentalEnergyRate = 5f;  // Default: 5 energy/sec from field
         this.chemotaxisStrength = 50f;  // Default: 50 force units for chemotaxis
+        this.mitosisThreshold = 25;  // Default: molecules with 25+ particles undergo division
+        this.mitosisCheckInterval = 3f;  // Default: check every 3 seconds
+        this.mitosisCheckAccumulator = 0f;
         this.world = new World(gravity, true);
         this.particlePool = new ParticlePool(initialParticleCapacity, Integer.MAX_VALUE);
         this.bondPool = new BondPool(initialParticleCapacity * 2, Integer.MAX_VALUE);
@@ -151,6 +157,14 @@ public final class PhysicsWorld implements Disposable {
     
     public float getChemotaxisStrength() {
         return chemotaxisStrength;
+    }
+    
+    public void setMitosisThreshold(int threshold) {
+        this.mitosisThreshold = Math.max(3, threshold); // Minimum 3 for valid molecule
+    }
+    
+    public int getMitosisThreshold() {
+        return mitosisThreshold;
     }
     
     public Array<MovingEnergyField> getMovingFields() {
@@ -376,11 +390,17 @@ public final class PhysicsWorld implements Disposable {
         // Apply chemotaxis forces (gradient following)
         applyChemotaxis();
         
+        // Apply crowding pressure (repulsion in dense regions)
+        applyCrowdingPressure();
+        
         // Age particles and bonds
         updateAging(delta);
         
         // Check for replication opportunities
         processReplication(delta);
+        
+        // Check for oversized molecules and trigger mitosis
+        processMitosis(delta);
         
         // Remove particles that ran out of energy
         removeDeadParticles();
@@ -390,6 +410,9 @@ public final class PhysicsWorld implements Disposable {
         
         // Check for crossing bonds within same molecule and break them
         detectAndBreakCrossingBonds();
+        
+        // Apply rotational shear forces to break peripheral bonds
+        applyRotationalShear();
         
         // Apply bond constraints before Box2D step
         for (int i = activeBonds.size - 1; i >= 0; i--) {
@@ -589,8 +612,17 @@ public final class PhysicsWorld implements Disposable {
             // Base energy decay
             float decay = energyDecayRate * delta;
             
-            // Additional cost per bond
-            float bondCost = bondEnergyCost * bondCount[i] * delta;
+            // Metabolic scaling: larger molecules have higher energy costs
+            // Get molecule size for this particle
+            int moleculeSize = getComponentSize(particle);
+            
+            // Scaling factor: starts at 1.0 for small molecules, increases for larger ones
+            // Formula: 1.0 + (size - 10) * 0.05, capped at 3x cost
+            // Examples: size 10 = 1.0x, size 20 = 1.5x, size 30 = 2.0x, size 40+ = 3.0x
+            float scalingFactor = Math.min(3.0f, 1.0f + Math.max(0f, (moleculeSize - 10) * 0.05f));
+            
+            // Additional cost per bond with metabolic scaling
+            float bondCost = bondEnergyCost * bondCount[i] * scalingFactor * delta;
             
             // Environmental energy absorption from moving fields
             float environmentalGain = 0f;
@@ -606,7 +638,11 @@ public final class PhysicsWorld implements Disposable {
                 // Get type-specific affinity (only positive affinity provides energy)
                 float affinity = field.getType().getAffinityFor(particleType);
                 if (affinity > 0f) {
-                    environmentalGain += fieldEnergy * affinity * environmentalEnergyRate * delta;
+                    // Energy field disruption: large molecules absorb less efficiently
+                    // Penalty formula: 1.0 / (1.0 + size * 0.02)
+                    // Examples: size 10 = 0.83x, size 20 = 0.71x, size 30 = 0.63x
+                    float absorptionPenalty = 1.0f / (1.0f + moleculeSize * 0.02f);
+                    environmentalGain += fieldEnergy * affinity * environmentalEnergyRate * absorptionPenalty * delta;
                 }
             }
             
@@ -649,12 +685,78 @@ public final class PhysicsWorld implements Disposable {
                 float fieldEnergy = field.getEnergyAt(particlePos.x, particlePos.y);
                 
                 // Apply force based on affinity and field strength
-                totalForceX += gradient[0] * chemotaxisStrength * affinity * fieldEnergy;
-                totalForceY += gradient[1] * chemotaxisStrength * affinity * fieldEnergy;
+                float baseForce = chemotaxisStrength * affinity * fieldEnergy;
+                
+                // Energy field disruption: large molecules experience stronger pulling forces
+                // This creates osmotic-like pressure that can tear molecules apart
+                int moleculeSize = getComponentSize(particle);
+                if (moleculeSize > 15) {
+                    // Disruption multiplier increases with size
+                    float disruptionMultiplier = 1.0f + (moleculeSize - 15) * 0.05f;
+                    baseForce *= disruptionMultiplier;
+                }
+                
+                totalForceX += gradient[0] * baseForce;
+                totalForceY += gradient[1] * baseForce;
             }
             
             // Apply accumulated force
             particle.getBody().applyForceToCenter(totalForceX, totalForceY, true);
+        }
+    }
+    
+    /**
+     * Apply crowding pressure - particles in dense regions experience repulsive forces.
+     * This simulates cytoskeletal stress and membrane tension in cells.
+     * Helps break up overly dense molecular structures.
+     */
+    private void applyCrowdingPressure() {
+        // Crowding radius - distance at which particles start to feel repulsion
+        final float CROWDING_RADIUS = 2.5f;
+        final float CROWDING_STRENGTH = 30f; // Force magnitude
+        
+        for (Particle particle : activeParticles) {
+            if (!particle.isActive() || !particle.isAlive()) continue;
+            
+            Vector2 particlePos = particle.getPosition();
+            
+            // Query nearby particles
+            Array<Particle> neighbors = queryNeighbors(particle, CROWDING_RADIUS);
+            
+            if (neighbors.size < 3) continue; // Not crowded enough
+            
+            // Calculate crowding density (more neighbors = stronger pressure)
+            float crowdingFactor = Math.min(1.0f, neighbors.size / 8.0f); // Cap at 8 neighbors
+            
+            // Calculate net repulsion direction
+            float repulsionX = 0f;
+            float repulsionY = 0f;
+            
+            for (Particle neighbor : neighbors) {
+                if (!neighbor.isAlive()) continue; // Don't interact with corpses
+                
+                Vector2 neighborPos = neighbor.getPosition();
+                float dx = particlePos.x - neighborPos.x;
+                float dy = particlePos.y - neighborPos.y;
+                float distSq = dx * dx + dy * dy;
+                
+                if (distSq < 0.01f) continue; // Too close, avoid division by zero
+                
+                float dist = (float) Math.sqrt(distSq);
+                
+                // Inverse square law for repulsion (stronger when very close)
+                float repulsionMag = 1.0f / (distSq + 0.1f);
+                
+                // Normalized direction away from neighbor
+                repulsionX += (dx / dist) * repulsionMag;
+                repulsionY += (dy / dist) * repulsionMag;
+            }
+            
+            // Apply crowding pressure force
+            float forceX = repulsionX * CROWDING_STRENGTH * crowdingFactor;
+            float forceY = repulsionY * CROWDING_STRENGTH * crowdingFactor;
+            
+            particle.getBody().applyForceToCenter(forceX, forceY, true);
         }
     }
     
@@ -835,6 +937,105 @@ public final class PhysicsWorld implements Disposable {
     }
     
     /**
+     * Process mitosis (cell division) for oversized molecules.
+     * When a molecule exceeds the size threshold, find the best place to divide it.
+     */
+    private void processMitosis(float delta) {
+        if (mitosisThreshold <= 0) return;
+        
+        mitosisCheckAccumulator += delta;
+        if (mitosisCheckAccumulator < mitosisCheckInterval) return;
+        mitosisCheckAccumulator = 0f;
+        
+        // Group particles by component ID to identify molecules
+        com.badlogic.gdx.utils.IntMap<Array<Particle>> componentGroups = new com.badlogic.gdx.utils.IntMap<>();
+        for (Particle particle : activeParticles) {
+            if (!particle.isActive() || !particle.isAlive()) continue;
+            
+            int componentId = particle.getComponentId();
+            Array<Particle> group = componentGroups.get(componentId);
+            if (group == null) {
+                group = new Array<>();
+                componentGroups.put(componentId, group);
+            }
+            group.add(particle);
+        }
+        
+        // Check each molecule for size threshold or metabolic stress
+        for (com.badlogic.gdx.utils.IntMap.Entry<Array<Particle>> entry : componentGroups) {
+            Array<Particle> molecule = entry.value;
+            
+            // Trigger 1: Size threshold exceeded
+            boolean oversized = molecule.size >= mitosisThreshold;
+            
+            // Trigger 2: Metabolic stress - average energy is critically low and molecule is large
+            float avgEnergy = 0f;
+            for (Particle p : molecule) {
+                avgEnergy += p.getEnergy();
+            }
+            avgEnergy /= molecule.size;
+            boolean metabolicStress = molecule.size > 15 && avgEnergy < 30f;
+            
+            if (oversized || metabolicStress) {
+                divideMolecule(molecule);
+            }
+        }
+    }
+    
+    /**
+     * Divide a molecule by breaking bonds along its narrowest cross-section.
+     * Strategy: Find the bond whose removal would best split the molecule into two equal halves.
+     */
+    private void divideMolecule(Array<Particle> moleculeParticles) {
+        if (moleculeParticles.size < 3) return; // Too small to divide
+        
+        // Calculate center of mass
+        float cx = 0, cy = 0;
+        for (Particle p : moleculeParticles) {
+            Vector2 pos = p.getPosition();
+            cx += pos.x;
+            cy += pos.y;
+        }
+        cx /= moleculeParticles.size;
+        cy /= moleculeParticles.size;
+        
+        // Find all bonds within this molecule
+        Array<Bond> moleculeBonds = new Array<>();
+        for (Bond bond : activeBonds) {
+            if (!bond.isActive()) continue;
+            Particle a = bond.getParticleA();
+            Particle b = bond.getParticleB();
+            if (moleculeParticles.contains(a, true) && moleculeParticles.contains(b, true)) {
+                moleculeBonds.add(bond);
+            }
+        }
+        
+        if (moleculeBonds.size == 0) return;
+        
+        // Find bond closest to center of mass (breaking here splits molecule most evenly)
+        Bond divisionBond = null;
+        float minDistToCenter = Float.MAX_VALUE;
+        
+        for (Bond bond : moleculeBonds) {
+            Vector2 posA = bond.getParticleA().getPosition();
+            Vector2 posB = bond.getParticleB().getPosition();
+            float midX = (posA.x + posB.x) * 0.5f;
+            float midY = (posA.y + posB.y) * 0.5f;
+            float distToCenter = (float) Math.sqrt((midX - cx) * (midX - cx) + (midY - cy) * (midY - cy));
+            
+            if (distToCenter < minDistToCenter) {
+                minDistToCenter = distToCenter;
+                divisionBond = bond;
+            }
+        }
+        
+        // Break the division bond (with some repulsive force)
+        if (divisionBond != null) {
+            destroyBond(divisionBond, true); // Violent break to push halves apart
+        }
+    }
+    
+    /**
      * Remove particles that have zero energy.
      */
     private void removeDeadParticles() {
@@ -919,6 +1120,100 @@ public final class PhysicsWorld implements Disposable {
         for (Bond bond : bondsToBreak) {
             if (bond.isActive()) {
                 destroyBond(bond, true);
+            }
+        }
+    }
+    
+    /**
+     * Apply rotational shear forces to break peripheral bonds in fast-spinning molecules.
+     * When angular velocity exceeds threshold, centrifugal forces tear molecules apart.
+     */
+    private void applyRotationalShear() {
+        final float ROTATION_THRESHOLD = 2.0f; // rad/s - angular velocity threshold
+        final float CENTRIFUGAL_FORCE = 100f; // Force multiplier
+        
+        // Group particles by component to analyze molecular rotation
+        com.badlogic.gdx.utils.IntMap<Array<Particle>> componentGroups = new com.badlogic.gdx.utils.IntMap<>();
+        for (Particle particle : activeParticles) {
+            if (!particle.isActive() || !particle.isAlive()) continue;
+            
+            int componentId = particle.getComponentId();
+            Array<Particle> group = componentGroups.get(componentId);
+            if (group == null) {
+                group = new Array<>();
+                componentGroups.put(componentId, group);
+            }
+            group.add(particle);
+        }
+        
+        // Check each molecule for excessive rotation
+        for (com.badlogic.gdx.utils.IntMap.Entry<Array<Particle>> entry : componentGroups) {
+            Array<Particle> molecule = entry.value;
+            
+            if (molecule.size < 3) continue; // Too small to experience significant shear
+            
+            // Calculate average angular velocity
+            float avgAngularVel = 0f;
+            for (Particle p : molecule) {
+                avgAngularVel += Math.abs(p.getBody().getAngularVelocity());
+            }
+            avgAngularVel /= molecule.size;
+            
+            if (avgAngularVel < ROTATION_THRESHOLD) continue;
+            
+            // Calculate center of mass
+            float cx = 0, cy = 0;
+            for (Particle p : molecule) {
+                Vector2 pos = p.getPosition();
+                cx += pos.x;
+                cy += pos.y;
+            }
+            cx /= molecule.size;
+            cy /= molecule.size;
+            
+            // Apply centrifugal force to peripheral particles
+            // Find and break bonds on particles far from center
+            Array<Bond> peripheralBonds = new Array<>();
+            
+            for (Bond bond : activeBonds) {
+                if (!bond.isActive()) continue;
+                
+                Particle a = bond.getParticleA();
+                Particle b = bond.getParticleB();
+                
+                // Check if both particles are in this molecule
+                if (!molecule.contains(a, true) || !molecule.contains(b, true)) continue;
+                
+                // Calculate distance from center for both particles
+                Vector2 posA = a.getPosition();
+                Vector2 posB = b.getPosition();
+                float distA = (float) Math.sqrt((posA.x - cx) * (posA.x - cx) + (posA.y - cy) * (posA.y - cy));
+                float distB = (float) Math.sqrt((posB.x - cx) * (posB.x - cx) + (posB.y - cy) * (posB.y - cy));
+                
+                // If at least one particle is peripheral (far from center)
+                float maxDist = Math.max(distA, distB);
+                if (maxDist > 3.0f) { // Peripheral threshold
+                    // Apply outward centrifugal force
+                    float forceX = (posA.x - cx) * CENTRIFUGAL_FORCE * avgAngularVel;
+                    float forceY = (posA.y - cy) * CENTRIFUGAL_FORCE * avgAngularVel;
+                    a.getBody().applyForceToCenter(forceX, forceY, true);
+                    
+                    forceX = (posB.x - cx) * CENTRIFUGAL_FORCE * avgAngularVel;
+                    forceY = (posB.y - cy) * CENTRIFUGAL_FORCE * avgAngularVel;
+                    b.getBody().applyForceToCenter(forceX, forceY, true);
+                    
+                    // Mark bond for potential breaking if rotation is extreme
+                    if (avgAngularVel > ROTATION_THRESHOLD * 2f) {
+                        peripheralBonds.add(bond);
+                    }
+                }
+            }
+            
+            // Break peripheral bonds under extreme rotation
+            for (Bond bond : peripheralBonds) {
+                if (bond.isActive() && Math.random() < 0.3f) { // 30% chance per check
+                    destroyBond(bond, true); // Violent break
+                }
             }
         }
     }
