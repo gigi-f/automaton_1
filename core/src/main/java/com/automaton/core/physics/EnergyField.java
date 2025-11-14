@@ -172,4 +172,27 @@ public class EnergyField {
         float halfHeight = worldHeight * 0.5f;
         return (int) ((worldY + halfHeight) / cellSize);
     }
+    
+    // Getters for rendering
+    public float getCellSize() {
+        return cellSize;
+    }
+    
+    public int getGridWidth() {
+        return gridWidth;
+    }
+    
+    public int getGridHeight() {
+        return gridHeight;
+    }
+    
+    /**
+     * Get energy at a specific grid cell.
+     */
+    public float getEnergyAtGrid(int gridX, int gridY) {
+        if (gridX < 0 || gridX >= gridWidth || gridY < 0 || gridY >= gridHeight) {
+            return 0f;
+        }
+        return grid[gridX][gridY];
+    }
 }

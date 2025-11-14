@@ -18,6 +18,8 @@ public class CameraController extends InputAdapter {
     private static final float MIN_ZOOM = 0.1f;
     private static final float MAX_ZOOM = 10f;
     private static final float ZOOM_SPEED = 0.1f;
+    private static final float KEYBOARD_ZOOM_SPEED = 0.15f;
+    private static final float PAN_SPEED = 20f; // Units per second
 
     private final OrthographicCamera camera;
     private final Vector3 tmpVec3 = new Vector3();
@@ -76,6 +78,47 @@ public class CameraController extends InputAdapter {
         camera.zoom = MathUtils.clamp(camera.zoom + zoomDelta, MIN_ZOOM, MAX_ZOOM);
         camera.update();
         return true;
+    }
+    
+    @Override
+    public boolean keyDown(int keycode) {
+        // Zoom in with = (equals) key
+        if (keycode == Input.Keys.EQUALS) {
+            camera.zoom = MathUtils.clamp(camera.zoom - KEYBOARD_ZOOM_SPEED, MIN_ZOOM, MAX_ZOOM);
+            camera.update();
+            return true;
+        }
+        // Zoom out with - (minus) key
+        if (keycode == Input.Keys.MINUS) {
+            camera.zoom = MathUtils.clamp(camera.zoom + KEYBOARD_ZOOM_SPEED, MIN_ZOOM, MAX_ZOOM);
+            camera.update();
+            return true;
+        }
+        return false;
+    }
+    
+    /**
+     * Update camera for keyboard panning with arrow keys.
+     * Call this every frame.
+     */
+    public void update(float delta) {
+        // Pan with arrow keys
+        float panAmount = PAN_SPEED * camera.zoom * delta; // Scale with zoom level
+        
+        if (Gdx.input.isKeyPressed(Input.Keys.LEFT)) {
+            camera.position.x -= panAmount;
+        }
+        if (Gdx.input.isKeyPressed(Input.Keys.RIGHT)) {
+            camera.position.x += panAmount;
+        }
+        if (Gdx.input.isKeyPressed(Input.Keys.UP)) {
+            camera.position.y += panAmount;
+        }
+        if (Gdx.input.isKeyPressed(Input.Keys.DOWN)) {
+            camera.position.y -= panAmount;
+        }
+        
+        camera.update();
     }
 
     /**

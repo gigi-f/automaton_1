@@ -7,6 +7,7 @@ import com.automaton.core.physics.ParticleType;
 import com.automaton.core.physics.PhysicsWorld;
 import com.automaton.core.physics.ReactionManager;
 import com.automaton.core.render.BondRenderer;
+import com.automaton.core.render.MovingEnergyFieldRenderer;
 import com.automaton.core.render.ParticleRenderer;
 import com.badlogic.gdx.ApplicationAdapter;
 import com.badlogic.gdx.Gdx;
@@ -19,9 +20,11 @@ import com.badlogic.gdx.math.Vector2;
 import com.badlogic.gdx.scenes.scene2d.Actor;
 import com.badlogic.gdx.scenes.scene2d.Stage;
 import com.badlogic.gdx.scenes.scene2d.ui.Label;
+import com.badlogic.gdx.scenes.scene2d.ui.ScrollPane;
 import com.badlogic.gdx.scenes.scene2d.ui.Skin;
 import com.badlogic.gdx.scenes.scene2d.ui.Slider;
 import com.badlogic.gdx.scenes.scene2d.ui.Table;
+import com.badlogic.gdx.scenes.scene2d.ui.TextTooltip;
 import com.badlogic.gdx.scenes.scene2d.utils.ChangeListener;
 import com.badlogic.gdx.utils.Array;
 import com.badlogic.gdx.utils.viewport.ScreenViewport;
@@ -41,10 +44,17 @@ public class AutomatonGame extends ApplicationAdapter {
     private ReactionManager reactionManager;
     private ParticleRenderer particleRenderer;
     private BondRenderer bondRenderer;
+    private MovingEnergyFieldRenderer movingEnergyFieldRenderer;
     private OrthographicCamera camera;
     private CameraController cameraController;
     private float accumulator;
     private boolean enableReactions = true; // Enabled by default
+    
+    // World boundaries (tracked for dynamic resizing)
+    private com.badlogic.gdx.physics.box2d.Body bottomWall;
+    private com.badlogic.gdx.physics.box2d.Body topWall;
+    private com.badlogic.gdx.physics.box2d.Body leftWall;
+    private com.badlogic.gdx.physics.box2d.Body rightWall;
     
     // UI
     private Stage uiStage;
@@ -52,11 +62,15 @@ public class AutomatonGame extends ApplicationAdapter {
     private float yellowFriction = 0.0f;  // Friction for XOR gate particles (yellow colored)
     private boolean uiVisible = true;  // Toggle with 'H' key
     private float startingVelocityRange = 24f; // Initial velocity range for particles
+    
+    // World configuration
+    private int initialSpawnCount = 33; // Total initial particles (singles + molecules)
+    private float worldSizeMultiplier = 1.0f; // Size multiplier for world dimensions
 
     @Override
     public void create() {
         physicsWorld = new PhysicsWorld(new Vector2(0f, 0f), 1024);
-        createWorldBoundaries();
+        updateWorldBoundaries();
         
         reactionManager = new ReactionManager(physicsWorld, 42L);
         
@@ -68,6 +82,7 @@ public class AutomatonGame extends ApplicationAdapter {
         particleRenderer = new ParticleRenderer();
         particleRenderer.setPhysicsWorld(physicsWorld);
         bondRenderer = new BondRenderer();
+        movingEnergyFieldRenderer = new MovingEnergyFieldRenderer();
         camera = new OrthographicCamera(WORLD_WIDTH, WORLD_HEIGHT);
         camera.position.set(0f, 0f, 0f);
         camera.update();
@@ -92,13 +107,68 @@ public class AutomatonGame extends ApplicationAdapter {
         // Create a simple skin programmatically
         skin = createSkin();
         
-        Table table = new Table();
-        table.setFillParent(true);
-        table.top().left();
-        table.pad(10);
+        // Root table that fills parent
+        Table root = new Table();
+        root.setFillParent(true);
+        
+        // Content table for all controls (will be scrollable)
+        Table contentTable = new Table();
+        contentTable.top().left();
+        contentTable.pad(10);
+        
+        // Use contentTable for all UI elements
+        Table table = contentTable;
+        
+        // World Configuration Section
+        Label worldConfigHeader = new Label("=== WORLD CONFIG ===", skin);
+        table.add(worldConfigHeader).padBottom(10).row();
+        
+        // Initial Spawn Count slider
+        Label spawnCountLabel = new Label("Spawn Count: 33", skin);
+        spawnCountLabel.setWrap(true);
+        spawnCountLabel.addListener(createTooltip("Number of particles spawned at simulation start (press R to restart)", skin));
+        Slider spawnCountSlider = new Slider(10f, 200f, 1f, false, skin);
+        spawnCountSlider.setValue(initialSpawnCount);
+        
+        spawnCountSlider.addListener(new ChangeListener() {
+            @Override
+            public void changed(ChangeEvent event, Actor actor) {
+                initialSpawnCount = (int) spawnCountSlider.getValue();
+                spawnCountLabel.setText(String.format("Spawn Count: %d", initialSpawnCount));
+            }
+        });
+        
+        table.add(spawnCountLabel).fillX().padBottom(5).row();
+        table.add(spawnCountSlider).width(200).row();
+        
+        // World Size Multiplier slider
+        table.add(new Label("", skin)).padTop(15).row(); // Spacer
+        Label worldSizeLabel = new Label("World Size: 1.0x", skin);
+        worldSizeLabel.setWrap(true);
+        worldSizeLabel.addListener(createTooltip("Multiplier for the playing field dimensions (0.5x = quarter size, 2x = quadruple size)", skin));
+        Slider worldSizeSlider = new Slider(0.5f, 2.0f, 0.1f, false, skin);
+        worldSizeSlider.setValue(worldSizeMultiplier);
+        
+        worldSizeSlider.addListener(new ChangeListener() {
+            @Override
+            public void changed(ChangeEvent event, Actor actor) {
+                worldSizeMultiplier = worldSizeSlider.getValue();
+                worldSizeLabel.setText(String.format("World Size: %.1fx", worldSizeMultiplier));
+            }
+        });
+        
+        table.add(worldSizeLabel).fillX().padBottom(5).row();
+        table.add(worldSizeSlider).width(200).row();
+        
+        // Simulation Parameters Section
+        table.add(new Label("", skin)).padTop(20).row(); // Spacer
+        Label simConfigHeader = new Label("=== SIMULATION ===", skin);
+        table.add(simConfigHeader).padBottom(10).row();
         
         // XOR gate friction slider (XOR is yellow colored)
         Label frictionLabel = new Label("XOR Friction: 0.00", skin);
+        frictionLabel.setWrap(true);
+        frictionLabel.addListener(createTooltip("Linear damping applied to XOR (yellow) particles. Higher values slow them down faster.", skin));
         Slider frictionSlider = new Slider(0f, 5f, 0.1f, false, skin);
         frictionSlider.setValue(yellowFriction);
         
@@ -111,12 +181,13 @@ public class AutomatonGame extends ApplicationAdapter {
             }
         });
         
-        table.add(frictionLabel).padBottom(5).row();
+        table.add(frictionLabel).fillX().padBottom(5).row();
         table.add(frictionSlider).width(200).row();
         
         // Reaction Violence slider
         table.add(new Label("", skin)).padTop(15).row(); // Spacer
         Label violenceLabel = new Label("Reaction Violence: 1.00x", skin);
+        violenceLabel.addListener(createTooltip("Intensity of explosive forces when incompatible bonds break. Higher = more violent reactions.", skin));
         Slider violenceSlider = new Slider(0f, 5f, 0.1f, false, skin);
         violenceSlider.setValue(physicsWorld.getReactionViolenceMultiplier());
         
@@ -135,6 +206,7 @@ public class AutomatonGame extends ApplicationAdapter {
         // Energy Decay Rate slider
         table.add(new Label("", skin)).padTop(15).row(); // Spacer
         Label energyDecayLabel = new Label("Energy Decay: 0.10/s", skin);
+        energyDecayLabel.addListener(createTooltip("Rate at which all particles lose energy over time. Particles die when energy reaches zero.", skin));
         Slider energyDecaySlider = new Slider(0f, 2f, 0.05f, false, skin);
         energyDecaySlider.setValue(physicsWorld.getEnergyDecayRate());
         
@@ -153,6 +225,7 @@ public class AutomatonGame extends ApplicationAdapter {
         // Bond Energy Cost slider
         table.add(new Label("", skin)).padTop(15).row(); // Spacer
         Label bondCostLabel = new Label("Bond Cost: 0.50/s", skin);
+        bondCostLabel.addListener(createTooltip("Energy cost per second for each bond maintained. Bonded particles consume energy to stay connected.", skin));
         Slider bondCostSlider = new Slider(0f, 5f, 0.1f, false, skin);
         bondCostSlider.setValue(physicsWorld.getBondEnergyCost());
         
@@ -171,6 +244,7 @@ public class AutomatonGame extends ApplicationAdapter {
         // Metabolism Rate slider (bond-generated food)
         table.add(new Label("", skin)).padTop(15).row(); // Spacer
         Label metabolismLabel = new Label("Metabolism: 2.00/s", skin);
+        metabolismLabel.addListener(createTooltip("Rate at which productive bonds generate energy-rich food particles as metabolic byproducts.", skin));
         Slider metabolismSlider = new Slider(0f, 10f, 0.5f, false, skin);
         metabolismSlider.setValue(physicsWorld.getFoodSpawnRate());
         
@@ -189,6 +263,7 @@ public class AutomatonGame extends ApplicationAdapter {
         // Activation Energy slider (minimum energy for bond formation)
         table.add(new Label("", skin)).padTop(15).row(); // Spacer
         Label activationLabel = new Label("Activation: 20", skin);
+        activationLabel.addListener(createTooltip("Minimum energy threshold required for particles to form new bonds. Low-energy particles cannot bond.", skin));
         Slider activationSlider = new Slider(0f, 50f, 5f, false, skin);
         activationSlider.setValue(reactionManager.getActivationEnergy());
         
@@ -207,6 +282,7 @@ public class AutomatonGame extends ApplicationAdapter {
         // Replication Energy slider (minimum energy to replicate)
         table.add(new Label("", skin)).padTop(15).row(); // Spacer
         Label replicationLabel = new Label("Replication: 80", skin);
+        replicationLabel.addListener(createTooltip("Energy threshold for particle replication. Particles with sufficient energy can duplicate themselves.", skin));
         Slider replicationSlider = new Slider(50f, 100f, 5f, false, skin);
         replicationSlider.setValue(physicsWorld.getReplicationEnergyThreshold());
         
@@ -225,6 +301,7 @@ public class AutomatonGame extends ApplicationAdapter {
         // Mutation Rate slider (probability of mutation during replication)
         table.add(new Label("", skin)).padTop(15).row(); // Spacer
         Label mutationLabel = new Label("Mutation: 10%", skin);
+        mutationLabel.addListener(createTooltip("Probability that a replicated particle will randomly change type (genetic mutation).", skin));
         Slider mutationSlider = new Slider(0f, 0.5f, 0.05f, false, skin);
         mutationSlider.setValue(physicsWorld.getMutationRate());
         
@@ -243,6 +320,7 @@ public class AutomatonGame extends ApplicationAdapter {
         // Environmental Energy slider (absorption rate from field)
         table.add(new Label("", skin)).padTop(15).row(); // Spacer
         Label envEnergyLabel = new Label("Field Energy: 5.0/s", skin);
+        envEnergyLabel.addListener(createTooltip("Rate at which particles absorb energy from moving energy fields, scaled by type-specific affinity.", skin));
         Slider envEnergySlider = new Slider(0f, 20f, 1f, false, skin);
         envEnergySlider.setValue(physicsWorld.getEnvironmentalEnergyRate());
         
@@ -261,6 +339,7 @@ public class AutomatonGame extends ApplicationAdapter {
         // Chemotaxis Strength slider (gradient following force)
         table.add(new Label("", skin)).padTop(15).row(); // Spacer
         Label chemotaxisLabel = new Label("Chemotaxis: 50", skin);
+        chemotaxisLabel.addListener(createTooltip("Force strength for gradient-following behavior. Particles move toward energy fields they're attracted to.", skin));
         Slider chemotaxisSlider = new Slider(0f, 200f, 10f, false, skin);
         chemotaxisSlider.setValue(physicsWorld.getChemotaxisStrength());
         
@@ -276,7 +355,28 @@ public class AutomatonGame extends ApplicationAdapter {
         table.add(chemotaxisLabel).padBottom(5).row();
         table.add(chemotaxisSlider).width(200).row();
         
-        uiStage.addActor(table);
+        // Create scroll pane for the content
+        ScrollPane scrollPane = new ScrollPane(contentTable, skin);
+        scrollPane.setFadeScrollBars(false);
+        scrollPane.setScrollingDisabled(true, false); // Only vertical scrolling
+        scrollPane.setOverscroll(false, false);
+        
+        // Add title label at top of side panel
+        Label titleLabel = new Label("CONTROLS", skin);
+        titleLabel.setAlignment(com.badlogic.gdx.utils.Align.center);
+        
+        // Side panel container (fixed width on right side)
+        Table sidePanel = new Table();
+        sidePanel.setBackground(skin.newDrawable("white", new com.badlogic.gdx.graphics.Color(0.15f, 0.15f, 0.15f, 0.95f)));
+        sidePanel.top();
+        sidePanel.add(titleLabel).pad(10).fillX().row();
+        sidePanel.add(scrollPane).expand().fill();
+        
+        // Layout: side panel on the right with fixed width
+        root.add().expand().fill(); // Empty space for simulation
+        root.add(sidePanel).width(250).fillY();
+        
+        uiStage.addActor(root);
     }
     
     /**
@@ -321,7 +421,37 @@ public class AutomatonGame extends ApplicationAdapter {
         
         skin.add("default-horizontal", sliderStyle);
         
+        // ScrollPane style
+        ScrollPane.ScrollPaneStyle scrollPaneStyle = new ScrollPane.ScrollPaneStyle();
+        scrollPaneStyle.background = whiteDrawable.tint(new com.badlogic.gdx.graphics.Color(0.1f, 0.1f, 0.1f, 0.5f));
+        scrollPaneStyle.vScroll = whiteDrawable.tint(new com.badlogic.gdx.graphics.Color(0.2f, 0.2f, 0.2f, 1f));
+        scrollPaneStyle.vScrollKnob = whiteDrawable.tint(new com.badlogic.gdx.graphics.Color(0.5f, 0.5f, 0.5f, 1f));
+        skin.add("default", scrollPaneStyle);
+        
+        // TextTooltip style with proper label style
+        Label.LabelStyle tooltipLabelStyle = new Label.LabelStyle();
+        tooltipLabelStyle.font = font;
+        tooltipLabelStyle.fontColor = com.badlogic.gdx.graphics.Color.WHITE;
+        tooltipLabelStyle.background = whiteDrawable.tint(new com.badlogic.gdx.graphics.Color(0.1f, 0.1f, 0.1f, 0.95f));
+        skin.add("tooltip", tooltipLabelStyle);
+        
+        TextTooltip.TextTooltipStyle tooltipStyle = new TextTooltip.TextTooltipStyle();
+        tooltipStyle.label = tooltipLabelStyle;
+        tooltipStyle.background = whiteDrawable.tint(new com.badlogic.gdx.graphics.Color(0.1f, 0.1f, 0.1f, 0.95f));
+        tooltipStyle.wrapWidth = 200f; // Wrap at 200 pixels
+        skin.add("default", tooltipStyle);
+        
         return skin;
+    }
+    
+    /**
+     * Helper method to create a tooltip with proper wrapping.
+     */
+    private TextTooltip createTooltip(String text, Skin skin) {
+        TextTooltip tooltip = new TextTooltip(text, skin);
+        tooltip.getActor().setWrap(true);
+        tooltip.setInstant(false);
+        return tooltip;
     }
     
     /**
@@ -358,16 +488,19 @@ public class AutomatonGame extends ApplicationAdapter {
             physicsWorld.destroyParticle(particle);
         }
         
+        // Update world boundaries based on current size multiplier
+        updateWorldBoundaries();
+        
         // Reset accumulator
         accumulator = 0f;
         
         // Reseed random for variety
         typeRandom.setSeed(System.currentTimeMillis());
         
-        // Spawn new demo molecules
+        // Spawn new demo molecules with current spawn count
         spawnDemoMolecules();
         
-        System.out.println("Simulation restarted!");
+        System.out.println("Simulation restarted with " + initialSpawnCount + " particles, world size: " + worldSizeMultiplier + "x");
     }
 
     @Override
@@ -384,6 +517,10 @@ public class AutomatonGame extends ApplicationAdapter {
         }
         
         float delta = Gdx.graphics.getDeltaTime();
+        
+        // Update camera for keyboard panning (arrow keys) and zoom (+/- keys)
+        cameraController.update(delta);
+        
         accumulator += delta;
         while (accumulator >= TIME_STEP) {
             physicsWorld.step(TIME_STEP, VELOCITY_ITERATIONS, POSITION_ITERATIONS);
@@ -399,6 +536,9 @@ public class AutomatonGame extends ApplicationAdapter {
         Gdx.gl.glClearColor(0f, 0f, 0f, 1f);
         Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT);
 
+        // Render moving energy fields as background
+        movingEnergyFieldRenderer.render(physicsWorld.getMovingFields(), camera);
+        
         bondRenderer.render(physicsWorld.getActiveBonds(), camera);
         particleRenderer.render(physicsWorld.getActiveParticles(), camera);
         
@@ -418,6 +558,7 @@ public class AutomatonGame extends ApplicationAdapter {
     public void dispose() {
         bondRenderer.dispose();
         particleRenderer.dispose();
+        movingEnergyFieldRenderer.dispose();
         physicsWorld.dispose();
         uiStage.dispose();
         skin.dispose();
@@ -438,43 +579,54 @@ public class AutomatonGame extends ApplicationAdapter {
         Array<Vector2> occupiedPositions = new Array<>();
         float minSpacing = 5f; // Minimum distance between molecule centers
         
-        // Singles (10 particles)
-        for (int i = 0; i < 10; i++) {
+        // Calculate distribution based on initialSpawnCount
+        // Default was 33 total particles: 10 singles, 8 pairs, 6 triplets, 4 triangles, 3 branched(4-6), 2 large(8-10)
+        // Scale proportionally
+        int count = initialSpawnCount;
+        int singles = Math.max(1, (int)(count * 0.30f)); // 30% singles
+        int pairs = Math.max(1, (int)(count * 0.24f));   // 24% pairs
+        int triplets = Math.max(1, (int)(count * 0.18f)); // 18% triplets
+        int triangles = Math.max(1, (int)(count * 0.12f)); // 12% triangles
+        int branched = Math.max(1, (int)(count * 0.09f)); // 9% branched
+        int large = Math.max(1, (int)(count * 0.06f)); // 6% large
+        
+        // Singles
+        for (int i = 0; i < singles; i++) {
             Vector2 pos = findFreePosition(occupiedPositions, minSpacing);
             spawnMolecule(1, pos.x, pos.y);
             occupiedPositions.add(pos);
         }
         
-        // Pairs (8 molecules)
-        for (int i = 0; i < 8; i++) {
+        // Pairs
+        for (int i = 0; i < pairs; i++) {
             Vector2 pos = findFreePosition(occupiedPositions, minSpacing);
             spawnAngleMolecule(2, pos.x, pos.y);
             occupiedPositions.add(pos);
         }
         
-        // Triplets (6 molecules) - varied angles
-        for (int i = 0; i < 6; i++) {
+        // Triplets - varied angles
+        for (int i = 0; i < triplets; i++) {
             Vector2 pos = findFreePosition(occupiedPositions, minSpacing);
             spawnAngleMolecule(3, pos.x, pos.y);
             occupiedPositions.add(pos);
         }
         
-        // Triangles (4 molecules)
-        for (int i = 0; i < 4; i++) {
+        // Triangles
+        for (int i = 0; i < triangles; i++) {
             Vector2 pos = findFreePosition(occupiedPositions, minSpacing);
             spawnTriangleMol(pos.x, pos.y);
             occupiedPositions.add(pos);
         }
         
-        // Branched structures (3 molecules, 4-5 nodes)
-        for (int i = 0; i < 3; i++) {
+        // Branched structures (4-6 nodes)
+        for (int i = 0; i < branched; i++) {
             Vector2 pos = findFreePosition(occupiedPositions, minSpacing);
             spawnBranchedMol(MathUtils.random(4, 6), pos.x, pos.y);
             occupiedPositions.add(pos);
         }
         
-        // Large irregular mols (2 molecules, 8-10 nodes)
-        for (int i = 0; i < 2; i++) {
+        // Large irregular mols (8-10 nodes)
+        for (int i = 0; i < large; i++) {
             Vector2 pos = findFreePosition(occupiedPositions, minSpacing);
             spawnBranchedMol(MathUtils.random(8, 11), pos.x, pos.y);
             occupiedPositions.add(pos);
@@ -486,8 +638,10 @@ public class AutomatonGame extends ApplicationAdapter {
      */
     private Vector2 findFreePosition(Array<Vector2> occupied, float minSpacing) {
         int maxAttempts = 50;
-        float spawnRangeX = WORLD_WIDTH * 0.4f;  // Use 80% of world width
-        float spawnRangeY = WORLD_HEIGHT * 0.4f;  // Use 80% of world height
+        float currentWidth = getCurrentWorldWidth();
+        float currentHeight = getCurrentWorldHeight();
+        float spawnRangeX = currentWidth * 0.4f;  // Use 80% of world width
+        float spawnRangeY = currentHeight * 0.4f;  // Use 80% of world height
         
         for (int attempt = 0; attempt < maxAttempts; attempt++) {
             float x = MathUtils.random(-spawnRangeX, spawnRangeX);
@@ -706,21 +860,33 @@ public class AutomatonGame extends ApplicationAdapter {
     }
 
     /**
-     * Create Box2D static bodies as walls around the world boundaries.
+     * Create or update Box2D static bodies as walls around the world boundaries.
+     * Supports dynamic world size based on worldSizeMultiplier.
      */
-    private void createWorldBoundaries() {
-        float halfWidth = WORLD_WIDTH / 2f;
-        float halfHeight = WORLD_HEIGHT / 2f;
+    private void updateWorldBoundaries() {
+        float actualWidth = WORLD_WIDTH * worldSizeMultiplier;
+        float actualHeight = WORLD_HEIGHT * worldSizeMultiplier;
+        float halfWidth = actualWidth / 2f;
+        float halfHeight = actualHeight / 2f;
         float wallThickness = 1f;
         
-        // Import Box2D classes for boundary creation
+        // Update moving field world size
+        physicsWorld.setWorldSize(actualWidth, actualHeight);
+        
         com.badlogic.gdx.physics.box2d.World world = physicsWorld.getWorld();
+        
+        // Remove existing walls if they exist
+        if (bottomWall != null) world.destroyBody(bottomWall);
+        if (topWall != null) world.destroyBody(topWall);
+        if (leftWall != null) world.destroyBody(leftWall);
+        if (rightWall != null) world.destroyBody(rightWall);
+        
         com.badlogic.gdx.physics.box2d.BodyDef bodyDef = new com.badlogic.gdx.physics.box2d.BodyDef();
         bodyDef.type = com.badlogic.gdx.physics.box2d.BodyDef.BodyType.StaticBody;
         
         // Bottom wall
         bodyDef.position.set(0, -halfHeight);
-        com.badlogic.gdx.physics.box2d.Body bottomWall = world.createBody(bodyDef);
+        bottomWall = world.createBody(bodyDef);
         com.badlogic.gdx.physics.box2d.PolygonShape bottomBox = new com.badlogic.gdx.physics.box2d.PolygonShape();
         bottomBox.setAsBox(halfWidth + wallThickness, wallThickness);
         bottomWall.createFixture(bottomBox, 0f);
@@ -728,7 +894,7 @@ public class AutomatonGame extends ApplicationAdapter {
         
         // Top wall
         bodyDef.position.set(0, halfHeight);
-        com.badlogic.gdx.physics.box2d.Body topWall = world.createBody(bodyDef);
+        topWall = world.createBody(bodyDef);
         com.badlogic.gdx.physics.box2d.PolygonShape topBox = new com.badlogic.gdx.physics.box2d.PolygonShape();
         topBox.setAsBox(halfWidth + wallThickness, wallThickness);
         topWall.createFixture(topBox, 0f);
@@ -736,7 +902,7 @@ public class AutomatonGame extends ApplicationAdapter {
         
         // Left wall
         bodyDef.position.set(-halfWidth, 0);
-        com.badlogic.gdx.physics.box2d.Body leftWall = world.createBody(bodyDef);
+        leftWall = world.createBody(bodyDef);
         com.badlogic.gdx.physics.box2d.PolygonShape leftBox = new com.badlogic.gdx.physics.box2d.PolygonShape();
         leftBox.setAsBox(wallThickness, halfHeight + wallThickness);
         leftWall.createFixture(leftBox, 0f);
@@ -744,10 +910,24 @@ public class AutomatonGame extends ApplicationAdapter {
         
         // Right wall
         bodyDef.position.set(halfWidth, 0);
-        com.badlogic.gdx.physics.box2d.Body rightWall = world.createBody(bodyDef);
+        rightWall = world.createBody(bodyDef);
         com.badlogic.gdx.physics.box2d.PolygonShape rightBox = new com.badlogic.gdx.physics.box2d.PolygonShape();
         rightBox.setAsBox(wallThickness, halfHeight + wallThickness);
         rightWall.createFixture(rightBox, 0f);
         rightBox.dispose();
+    }
+    
+    /**
+     * Get current world width based on size multiplier.
+     */
+    private float getCurrentWorldWidth() {
+        return WORLD_WIDTH * worldSizeMultiplier;
+    }
+    
+    /**
+     * Get current world height based on size multiplier.
+     */
+    private float getCurrentWorldHeight() {
+        return WORLD_HEIGHT * worldSizeMultiplier;
     }
 }

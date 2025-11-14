@@ -28,6 +28,7 @@ public final class Particle implements Pool.Poolable {
     private int componentId; // Component ID from union-find
     private boolean isEnergyRich; // Can this particle be consumed for energy?
     private float age; // Age in seconds since creation
+    private boolean isAlive; // Living particles can form bonds, dead ones cannot
 
     void init(Body body,
               ParticleType type,
@@ -43,6 +44,7 @@ public final class Particle implements Pool.Poolable {
         this.componentId = this.hashCode(); // Initially its own component
         this.isEnergyRich = false; // Normal particles start as non-edible
         this.age = 0f; // Start at age 0
+        this.isAlive = true; // Start alive
 
         Filter filter = body.getFixtureList().first().getFilterData();
         filter.categoryBits = CATEGORY_PARTICLE;
@@ -105,6 +107,19 @@ public final class Particle implements Pool.Poolable {
     public void updateAge(float delta) {
         this.age += delta;
     }
+    
+    public boolean isAlive() {
+        return isAlive;
+    }
+    
+    public void setAlive(boolean alive) {
+        this.isAlive = alive;
+    }
+    
+    public void kill() {
+        this.isAlive = false;
+        this.isEnergyRich = true; // Dead particles become consumable
+    }
 
     public int getComponentId() {
         return componentId;
@@ -135,5 +150,6 @@ public final class Particle implements Pool.Poolable {
         active = false;
         isEnergyRich = false;
         age = 0f;
+        isAlive = true;
     }
 }

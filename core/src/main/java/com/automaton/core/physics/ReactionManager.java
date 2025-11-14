@@ -53,13 +53,13 @@ public class ReactionManager {
         // Use indexed loop to avoid nested iterator issues
         for (int i = 0; i < particles.size; i++) {
             Particle particle = particles.get(i);
-            if (!particle.isActive()) continue;
+            if (!particle.isActive() || !particle.isAlive()) continue; // Dead particles cannot form bonds
             
             // Query nearby particles using spatial hash grid
             Array<Particle> neighbors = physicsWorld.queryNeighbors(particle, bondFormationRadius);
             
             for (Particle neighbor : neighbors) {
-                if (!neighbor.isActive()) continue;
+                if (!neighbor.isActive() || !neighbor.isAlive()) continue; // Dead particles cannot form bonds
                 
                 // Check if already bonded
                 if (areBonded(particle, neighbor)) continue;

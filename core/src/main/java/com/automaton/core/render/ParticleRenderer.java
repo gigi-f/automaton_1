@@ -49,19 +49,26 @@ public final class ParticleRenderer implements Disposable {
             float drawX = pos.x - radius;
             float drawY = pos.y - radius;
             
-            // Color based on particle type, brightness based on energy
-            Color typeColor = particle.getType().getColor();
-            float energy = particle.getEnergy();
-            float energyMultiplier = energy / 100f;  // 0-1 range
+            // Check if particle is dead (corpse)
+            if (!particle.isAlive()) {
+                // Dead particles: grayscale with reduced opacity
+                float gray = 0.4f;  // Dark gray
+                tmpColor.set(gray, gray, gray, 0.5f); // 50% opacity
+            } else {
+                // Living particles: color based on type, brightness based on energy
+                Color typeColor = particle.getType().getColor();
+                float energy = particle.getEnergy();
+                float energyMultiplier = energy / 100f;  // 0-1 range
+                
+                // Lerp between dark (low energy) and full brightness (high energy)
+                float minBrightness = 0.3f;  // Minimum brightness at 0 energy
+                float brightness = minBrightness + (1f - minBrightness) * energyMultiplier;
+                
+                tmpColor.set(typeColor.r * brightness, typeColor.g * brightness, 
+                            typeColor.b * brightness, typeColor.a);
+            }
             
-            // Lerp between dark (low energy) and full brightness (high energy)
-            float minBrightness = 0.3f;  // Minimum brightness at 0 energy
-            float brightness = minBrightness + (1f - minBrightness) * energyMultiplier;
-            
-            tmpColor.set(typeColor.r * brightness, typeColor.g * brightness, 
-                        typeColor.b * brightness, typeColor.a);
             batch.setColor(tmpColor);
-            
             batch.draw(circleRegion, drawX, drawY, diameter, diameter);
         }
         batch.setColor(Color.WHITE); // Reset

@@ -90,6 +90,26 @@ High-level tasks
   - Node inspector, hover selection, trails, color maps, 3 example presets.
   - Acceptance: shipped presets.
 
+## New Features (Added)
+
+- [ ] Add world configuration sliders
+  - Add UI sliders for: a) initial spawn count (number of nodes), b) world size (dynamic boundary adjustment)
+  - Boundaries should expand/contract based on world size slider
+  - Acceptance: can adjust spawn count and world size, restart updates boundaries
+
+- [ ] Multi-type energy fields with environmental dynamics
+  - Multiple energy field types (color-coded: red, green, blue, etc.)
+  - Each field type attracts/repels specific particle types differently
+  - Fields should move across screen like waves (spawn from edge, move in random direction/speed)
+  - Visual representation for each field type
+  - Acceptance: multiple colored fields visible, moving, affecting different particles uniquely
+
+- [ ] Corpse system (dead particles remain consumable)
+  - Dead particles (energy=0) remain in world as "corpses" 
+  - Corpses cannot form new bonds but remain consumable by living particles
+  - Visual indicator for dead particles (grayscale, reduced opacity, or distinct marker)
+  - Acceptance: dead particles visible but inactive, can be consumed for energy
+
 Notes and assumptions
 - We'll start with a desktop-only libGDX project for fast iteration; mobile/Android can be added later.
 - **Hybrid physics**: Box2D bodies for particle motion/collisions, custom spring constraints for bonds (NOT Box2D joints) to avoid joint solver bottleneck.

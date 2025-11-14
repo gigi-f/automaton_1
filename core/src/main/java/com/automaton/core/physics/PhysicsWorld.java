@@ -31,6 +31,9 @@ public final class PhysicsWorld implements Disposable {
     private final UnionFind unionFind;
     private final BondProperties bondProperties;
     private final EnergyField energyField;
+    private final Array<MovingEnergyField> movingFields;
+    private final CellInteriorDetector cellInteriorDetector;
+    private final Array<Particle> corpsesToRemove;
     private float reactionViolenceMultiplier;
     private float energyDecayRate;
     private float bondEnergyCost;
@@ -61,12 +64,21 @@ public final class PhysicsWorld implements Disposable {
         
         // Initialize energy field (100x56 world, 5 unit cells, 0.3 strength)
         this.energyField = new EnergyField(100f, 56f, 5f, 0.3f);
+        
+        // Initialize moving energy fields (one of each type)
+        this.movingFields = new Array<>();
+        for (MovingEnergyField.FieldType type : MovingEnergyField.FieldType.values()) {
+            this.movingFields.add(new MovingEnergyField(type, 100f, 56f));
+        }
+        
         this.activeParticles = new Array<>(false, initialParticleCapacity);
         this.activeBonds = new Array<>(false, initialParticleCapacity * 2);
         // Cell size = 2.5 units (typical particle spacing in demo)
         this.spatialGrid = new SpatialHashGrid(2.5f);
         this.unionFind = new UnionFind();
         this.bondProperties = new BondProperties();
+        this.cellInteriorDetector = new CellInteriorDetector();
+        this.corpsesToRemove = new Array<>();
     }
     
     public BondProperties getBondProperties() {
@@ -139,6 +151,16 @@ public final class PhysicsWorld implements Disposable {
     
     public float getChemotaxisStrength() {
         return chemotaxisStrength;
+    }
+    
+    public Array<MovingEnergyField> getMovingFields() {
+        return movingFields;
+    }
+    
+    public void setWorldSize(float worldWidth, float worldHeight) {
+        for (MovingEnergyField field : movingFields) {
+            field.setWorldSize(worldWidth, worldHeight);
+        }
     }
 
     public World getWorld() {
@@ -337,6 +359,11 @@ public final class PhysicsWorld implements Disposable {
     }
 
     public void step(float delta, int velocityIterations, int positionIterations) {
+        // Update moving energy fields
+        for (MovingEnergyField field : movingFields) {
+            field.update(delta);
+        }
+        
         // Spawn food particles at configured rate
         spawnFoodParticles(delta);
         
@@ -357,6 +384,9 @@ public final class PhysicsWorld implements Disposable {
         
         // Remove particles that ran out of energy
         removeDeadParticles();
+        
+        // Process corpse consumption by molecular structures
+        processCellInteriorConsumption();
         
         // Check for crossing bonds within same molecule and break them
         detectAndBreakCrossingBonds();
@@ -562,12 +592,23 @@ public final class PhysicsWorld implements Disposable {
             // Additional cost per bond
             float bondCost = bondEnergyCost * bondCount[i] * delta;
             
-            // Environmental energy absorption from spatial field
-            float fieldEnergy = energyField.getEnergyAt(
-                particle.getPosition().x, 
-                particle.getPosition().y
-            );
-            float environmentalGain = fieldEnergy * environmentalEnergyRate * delta;
+            // Environmental energy absorption from moving fields
+            float environmentalGain = 0f;
+            Vector2 particlePos = particle.getPosition();
+            ParticleType particleType = particle.getType();
+            
+            for (MovingEnergyField field : movingFields) {
+                if (!field.isActive()) continue;
+                
+                // Get field energy at particle position
+                float fieldEnergy = field.getEnergyAt(particlePos.x, particlePos.y);
+                
+                // Get type-specific affinity (only positive affinity provides energy)
+                float affinity = field.getType().getAffinityFor(particleType);
+                if (affinity > 0f) {
+                    environmentalGain += fieldEnergy * affinity * environmentalEnergyRate * delta;
+                }
+            }
             
             // Net energy change
             particle.consumeEnergy(decay + bondCost);
@@ -586,25 +627,34 @@ public final class PhysicsWorld implements Disposable {
         float[] gradient = new float[2];
         
         for (Particle particle : activeParticles) {
-            if (!particle.isActive()) continue;
+            if (!particle.isActive() || !particle.isAlive()) continue;
             
-            // Only logic state particles exhibit chemotaxis
-            if (!particle.getType().isLogicState()) continue;
+            Vector2 particlePos = particle.getPosition();
+            ParticleType particleType = particle.getType();
             
-            // Get gradient direction at particle position
-            energyField.getGradientDirection(
-                particle.getPosition().x,
-                particle.getPosition().y,
-                gradient
-            );
+            // Accumulate forces from all active moving fields
+            float totalForceX = 0f;
+            float totalForceY = 0f;
             
-            // TRUE moves toward higher energy, FALSE toward lower energy
-            float direction = particle.getType() == ParticleType.TRUE ? 1.0f : -1.0f;
+            for (MovingEnergyField field : movingFields) {
+                if (!field.isActive()) continue;
+                
+                // Get gradient direction toward this field
+                field.getGradientDirection(particlePos.x, particlePos.y, gradient);
+                
+                // Get type-specific affinity (positive=attracted, negative=repelled)
+                float affinity = field.getType().getAffinityFor(particleType);
+                
+                // Get field energy at particle position
+                float fieldEnergy = field.getEnergyAt(particlePos.x, particlePos.y);
+                
+                // Apply force based on affinity and field strength
+                totalForceX += gradient[0] * chemotaxisStrength * affinity * fieldEnergy;
+                totalForceY += gradient[1] * chemotaxisStrength * affinity * fieldEnergy;
+            }
             
-            float forceX = gradient[0] * chemotaxisStrength * direction;
-            float forceY = gradient[1] * chemotaxisStrength * direction;
-            
-            particle.getBody().applyForceToCenter(forceX, forceY, true);
+            // Apply accumulated force
+            particle.getBody().applyForceToCenter(totalForceX, totalForceY, true);
         }
     }
     
@@ -788,15 +838,15 @@ public final class PhysicsWorld implements Disposable {
      * Remove particles that have zero energy.
      */
     private void removeDeadParticles() {
-        Array<Particle> particlesToRemove = new Array<>();
+        Array<Particle> particlesToKill = new Array<>();
         
         for (Particle particle : activeParticles) {
-            if (particle.isActive() && particle.getEnergy() <= 0f) {
-                particlesToRemove.add(particle);
+            if (particle.isActive() && particle.getEnergy() <= 0f && particle.isAlive()) {
+                particlesToKill.add(particle);
             }
         }
         
-        for (Particle particle : particlesToRemove) {
+        for (Particle particle : particlesToKill) {
             // Remove all bonds connected to this particle first
             Array<Bond> bondsToRemove = new Array<>();
             for (Bond bond : activeBonds) {
@@ -810,7 +860,28 @@ public final class PhysicsWorld implements Disposable {
                 destroyBond(bond, false);  // No violent reaction on energy death
             }
             
-            destroyParticle(particle);
+            // Convert to corpse instead of destroying
+            particle.kill(); // Sets isAlive=false, isEnergyRich=true
+            
+            // Reduce velocity to simulate "death"
+            particle.getBody().setLinearVelocity(
+                particle.getBody().getLinearVelocity().scl(0.3f)
+            );
+        }
+    }
+    
+    /**
+     * Process corpses that enter the interior space of molecular structures.
+     * When a corpse (dead particle) is detected inside a "cell" (molecule with 3+ bonded particles),
+     * its energy is distributed to all living particles in that molecule and the corpse is removed.
+     */
+    private void processCellInteriorConsumption() {
+        // Detect which corpses are inside molecular structures
+        cellInteriorDetector.processCorpseConsumption(activeParticles, corpsesToRemove);
+        
+        // Remove consumed corpses
+        for (Particle corpse : corpsesToRemove) {
+            destroyParticle(corpse);
         }
     }
 
