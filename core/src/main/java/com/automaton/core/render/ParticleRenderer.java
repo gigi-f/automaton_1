@@ -40,6 +40,10 @@ public final class ParticleRenderer implements Disposable {
     }
 
     public void render(Array<Particle> particles, OrthographicCamera camera) {
+        render(particles, camera, 0f);
+    }
+    
+    public void render(Array<Particle> particles, OrthographicCamera camera, float time) {
         batch.setProjectionMatrix(camera.combined);
         batch.begin();
         for (Particle particle : particles) {
@@ -49,11 +53,38 @@ public final class ParticleRenderer implements Disposable {
             float drawX = pos.x - radius;
             float drawY = pos.y - radius;
             
-            // Check if particle is dead (corpse)
-            if (!particle.isAlive()) {
+            // Check if particle is an organelle
+            if (particle.isOrganelle()) {
+                // Organelles: pulsing bright green glow
+                Color typeColor = particle.getType().getColor();
+                
+                // Pulsing effect: brightness oscillates between 1.0 and 1.5
+                float pulse = 1.0f + 0.5f * (0.5f + 0.5f * MathUtils.sin(time * 3f));
+                
+                tmpColor.set(typeColor.r * pulse, typeColor.g * pulse, 
+                            typeColor.b * pulse, 1.0f);
+                
+                // Draw main particle
+                batch.setColor(tmpColor);
+                batch.draw(circleRegion, drawX, drawY, diameter, diameter);
+                
+                // Draw outer glow ring with transparency
+                float glowRadius = radius * 1.4f;
+                float glowDiameter = glowRadius * 2f;
+                float glowX = pos.x - glowRadius;
+                float glowY = pos.y - glowRadius;
+                
+                tmpColor.a = 0.3f * pulse * 0.5f; // Semi-transparent pulsing glow
+                batch.setColor(tmpColor);
+                batch.draw(circleRegion, glowX, glowY, glowDiameter, glowDiameter);
+                
+            } else if (!particle.isAlive()) {
                 // Dead particles: grayscale with reduced opacity
                 float gray = 0.4f;  // Dark gray
                 tmpColor.set(gray, gray, gray, 0.5f); // 50% opacity
+                batch.setColor(tmpColor);
+                batch.draw(circleRegion, drawX, drawY, diameter, diameter);
+                
             } else {
                 // Living particles: color based on type, brightness based on energy
                 Color typeColor = particle.getType().getColor();
@@ -66,10 +97,26 @@ public final class ParticleRenderer implements Disposable {
                 
                 tmpColor.set(typeColor.r * brightness, typeColor.g * brightness, 
                             typeColor.b * brightness, typeColor.a);
+                
+                batch.setColor(tmpColor);
+                batch.draw(circleRegion, drawX, drawY, diameter, diameter);
             }
             
-            batch.setColor(tmpColor);
-            batch.draw(circleRegion, drawX, drawY, diameter, diameter);
+            // Check for mitosis flash effect (applies to all particle types)
+            if (physicsWorld != null && physicsWorld.isParticleMitosisFlashing(particle)) {
+                float flashIntensity = physicsWorld.getParticleMitosisFlashIntensity(particle);
+                
+                // Draw bright cyan/white flash overlay
+                float flashRadius = radius * (1.2f + 0.3f * flashIntensity); // Expands as it fades
+                float flashDiameter = flashRadius * 2f;
+                float flashX = pos.x - flashRadius;
+                float flashY = pos.y - flashRadius;
+                
+                // Cyan-white color (0.3, 1.0, 1.0) mixed with white
+                tmpColor.set(0.3f + 0.7f * flashIntensity, 1.0f, 1.0f, flashIntensity * 0.7f);
+                batch.setColor(tmpColor);
+                batch.draw(circleRegion, flashX, flashY, flashDiameter, flashDiameter);
+            }
         }
         batch.setColor(Color.WHITE); // Reset
         batch.end();

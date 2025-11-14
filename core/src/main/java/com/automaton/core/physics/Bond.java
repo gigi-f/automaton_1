@@ -75,14 +75,55 @@ public final class Bond implements Pool.Poolable {
     }
     
     /**
-     * Get the effective break force threshold, reduced by aging.
+     * Get the effective break force threshold, reduced by aging but strengthened by nearby organelles.
      * Bonds become more fragile over time (lose 50% strength after 60 seconds).
+     * Organelles within range strengthen bonds exponentially.
      */
     public float getEffectiveBreakForce() {
         // Aging formula: strength = base * (1 - 0.5 * min(age/60, 1))
         // After 60 seconds, bond is at 50% original strength
         float agingFactor = 1.0f - (0.5f * Math.min(age / 60f, 1.0f));
         return breakForceThreshold * agingFactor;
+    }
+    
+    /**
+     * Get the effective break force with organelle strengthening applied.
+     * Each organelle within range multiplies bond strength.
+     */
+    public float getEffectiveBreakForce(com.badlogic.gdx.utils.Array<Particle> allParticles) {
+        float baseStrength = getEffectiveBreakForce();
+        
+        if (allParticles == null || !particleA.isActive() || !particleB.isActive()) {
+            return baseStrength;
+        }
+        
+        // Find midpoint of bond
+        Vector2 posA = particleA.getPosition();
+        Vector2 posB = particleB.getPosition();
+        float midX = (posA.x + posB.x) / 2f;
+        float midY = (posA.y + posB.y) / 2f;
+        
+        // Count organelles within influence range
+        final float ORGANELLE_RANGE = 4.0f; // How far organelles can strengthen bonds
+        final float STRENGTH_PER_ORGANELLE = 1.5f; // Each organelle multiplies strength by this
+        
+        int nearbyOrganelles = 0;
+        for (Particle p : allParticles) {
+            if (!p.isActive() || !p.isOrganelle()) continue;
+            
+            Vector2 pPos = p.getPosition();
+            float dx = pPos.x - midX;
+            float dy = pPos.y - midY;
+            float distSq = dx * dx + dy * dy;
+            
+            if (distSq < ORGANELLE_RANGE * ORGANELLE_RANGE) {
+                nearbyOrganelles++;
+            }
+        }
+        
+        // Apply exponential strengthening: strength * (1.5^organelleCount)
+        float organelleBoost = (float) Math.pow(STRENGTH_PER_ORGANELLE, nearbyOrganelles);
+        return baseStrength * organelleBoost;
     }
 
     /**
@@ -137,6 +178,14 @@ public final class Bond implements Pool.Poolable {
      * Returns true if the bond should break (force exceeded threshold).
      */
     public boolean applyConstraint() {
+        return applyConstraint(null);
+    }
+    
+    /**
+     * Applies spring constraint forces to both particles with organelle strengthening.
+     * Returns true if the bond should break (force exceeded threshold).
+     */
+    public boolean applyConstraint(com.badlogic.gdx.utils.Array<Particle> allParticles) {
         if (!active || particleA == null || particleB == null 
             || !particleA.isActive() || !particleB.isActive()) {
             return true;
@@ -166,8 +215,11 @@ public final class Bond implements Pool.Poolable {
 
         currentForce = Math.abs(totalForce);
         
-        // Use effective break force (reduced by aging)
-        if (currentForce > getEffectiveBreakForce()) {
+        // Use effective break force (reduced by aging, boosted by organelles)
+        float effectiveBreakForce = allParticles != null ? 
+            getEffectiveBreakForce(allParticles) : getEffectiveBreakForce();
+            
+        if (currentForce > effectiveBreakForce) {
             return true;
         }
 

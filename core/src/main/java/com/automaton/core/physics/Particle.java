@@ -29,6 +29,9 @@ public final class Particle implements Pool.Poolable {
     private boolean isEnergyRich; // Can this particle be consumed for energy?
     private float age; // Age in seconds since creation
     private boolean isAlive; // Living particles can form bonds, dead ones cannot
+    private boolean isOrganelle; // Is this particle trapped as an organelle within a molecule?
+    private float mitosisLockTimer; // Time remaining before can rebond after mitosis
+    private float mitosisFlashTimer; // Time remaining for visual flash effect
 
     void init(Body body,
               ParticleType type,
@@ -45,6 +48,9 @@ public final class Particle implements Pool.Poolable {
         this.isEnergyRich = false; // Normal particles start as non-edible
         this.age = 0f; // Start at age 0
         this.isAlive = true; // Start alive
+        this.isOrganelle = false; // Start as normal particle
+        this.mitosisLockTimer = 0f; // No lock initially
+        this.mitosisFlashTimer = 0f; // No flash initially
 
         Filter filter = body.getFixtureList().first().getFilterData();
         filter.categoryBits = CATEGORY_PARTICLE;
@@ -120,6 +126,14 @@ public final class Particle implements Pool.Poolable {
         this.isAlive = false;
         this.isEnergyRich = true; // Dead particles become consumable
     }
+    
+    public boolean isOrganelle() {
+        return isOrganelle;
+    }
+    
+    public void setOrganelle(boolean organelle) {
+        this.isOrganelle = organelle;
+    }
 
     public int getComponentId() {
         return componentId;
@@ -127,6 +141,44 @@ public final class Particle implements Pool.Poolable {
 
     public void setComponentId(int componentId) {
         this.componentId = componentId;
+    }
+    
+    public float getMitosisLockTimer() {
+        return mitosisLockTimer;
+    }
+    
+    public void setMitosisLock(float duration) {
+        this.mitosisLockTimer = duration;
+    }
+    
+    public void updateMitosisLockTimer(float delta) {
+        if (mitosisLockTimer > 0f) {
+            mitosisLockTimer -= delta;
+            if (mitosisLockTimer < 0f) mitosisLockTimer = 0f;
+        }
+    }
+    
+    public boolean isMitosisLocked() {
+        return mitosisLockTimer > 0f;
+    }
+    
+    public float getMitosisFlashTimer() {
+        return mitosisFlashTimer;
+    }
+    
+    public void setMitosisFlash(float duration) {
+        this.mitosisFlashTimer = duration;
+    }
+    
+    public void updateMitosisFlashTimer(float delta) {
+        if (mitosisFlashTimer > 0f) {
+            mitosisFlashTimer -= delta;
+            if (mitosisFlashTimer < 0f) mitosisFlashTimer = 0f;
+        }
+    }
+    
+    public boolean isMitosisFlashing() {
+        return mitosisFlashTimer > 0f;
     }
 
     void deactivate(World world) {
@@ -151,5 +203,8 @@ public final class Particle implements Pool.Poolable {
         isEnergyRich = false;
         age = 0f;
         isAlive = true;
+        isOrganelle = false;
+        mitosisLockTimer = 0f;
+        mitosisFlashTimer = 0f;
     }
 }

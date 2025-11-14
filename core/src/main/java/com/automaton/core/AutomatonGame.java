@@ -48,6 +48,7 @@ public class AutomatonGame extends ApplicationAdapter {
     private OrthographicCamera camera;
     private CameraController cameraController;
     private float accumulator;
+    private float totalTime; // Total elapsed time for animations
     private boolean enableReactions = true; // Enabled by default
     
     // World boundaries (tracked for dynamic resizing)
@@ -374,6 +375,99 @@ public class AutomatonGame extends ApplicationAdapter {
         table.add(mitosisLabel).padBottom(5).row();
         table.add(mitosisSlider).width(200).row();
         
+        // Hunting Range slider
+        table.add(new Label("", skin)).padTop(15).row(); // Spacer
+        Label huntingRangeLabel = new Label("Hunting Range: 15", skin);
+        huntingRangeLabel.addListener(createTooltip("Distance within which hungry molecules detect and chase food particles. Larger range = longer-distance hunting.", skin));
+        Slider huntingRangeSlider = new Slider(0f, 30f, 5f, false, skin);
+        huntingRangeSlider.setValue(physicsWorld.getHuntingRange());
+        
+        huntingRangeSlider.addListener(new ChangeListener() {
+            @Override
+            public void changed(ChangeEvent event, Actor actor) {
+                float range = huntingRangeSlider.getValue();
+                physicsWorld.setHuntingRange(range);
+                huntingRangeLabel.setText(String.format("Hunting Range: %.0f", range));
+            }
+        });
+        
+        table.add(huntingRangeLabel).padBottom(5).row();
+        table.add(huntingRangeSlider).width(200).row();
+        
+        // Hunting Force slider
+        Label huntingForceLabel = new Label("Hunting Force: 40", skin);
+        huntingForceLabel.addListener(createTooltip("Strength of the force pulling hungry molecules toward food. Higher values = more aggressive hunting.", skin));
+        Slider huntingForceSlider = new Slider(0f, 100f, 10f, false, skin);
+        huntingForceSlider.setValue(physicsWorld.getHuntingForce());
+        
+        huntingForceSlider.addListener(new ChangeListener() {
+            @Override
+            public void changed(ChangeEvent event, Actor actor) {
+                float force = huntingForceSlider.getValue();
+                physicsWorld.setHuntingForce(force);
+                huntingForceLabel.setText(String.format("Hunting Force: %.0f", force));
+            }
+        });
+        
+        table.add(huntingForceLabel).padBottom(5).row();
+        table.add(huntingForceSlider).width(200).row();
+        
+        // Suction Range slider
+        table.add(new Label("", skin)).padTop(15).row(); // Spacer
+        Label suctionRangeLabel = new Label("Suction Range: 8", skin);
+        suctionRangeLabel.addListener(createTooltip("Distance within which molecules pull food particles toward them. Larger range = wider feeding area.", skin));
+        Slider suctionRangeSlider = new Slider(0f, 20f, 2f, false, skin);
+        suctionRangeSlider.setValue(physicsWorld.getSuctionRange());
+        
+        suctionRangeSlider.addListener(new ChangeListener() {
+            @Override
+            public void changed(ChangeEvent event, Actor actor) {
+                float range = suctionRangeSlider.getValue();
+                physicsWorld.setSuctionRange(range);
+                suctionRangeLabel.setText(String.format("Suction Range: %.0f", range));
+            }
+        });
+        
+        table.add(suctionRangeLabel).padBottom(5).row();
+        table.add(suctionRangeSlider).width(200).row();
+        
+        // Suction Force slider
+        Label suctionForceLabel = new Label("Suction Force: 60", skin);
+        suctionForceLabel.addListener(createTooltip("Strength of the force pulling food toward molecules. Higher values = stronger vacuum effect.", skin));
+        Slider suctionForceSlider = new Slider(0f, 150f, 10f, false, skin);
+        suctionForceSlider.setValue(physicsWorld.getSuctionForce());
+        
+        suctionForceSlider.addListener(new ChangeListener() {
+            @Override
+            public void changed(ChangeEvent event, Actor actor) {
+                float force = suctionForceSlider.getValue();
+                physicsWorld.setSuctionForce(force);
+                suctionForceLabel.setText(String.format("Suction Force: %.0f", force));
+            }
+        });
+        
+        table.add(suctionForceLabel).padBottom(5).row();
+        table.add(suctionForceSlider).width(200).row();
+        
+        // Organelle Energy Rate slider
+        table.add(new Label("", skin)).padTop(15).row(); // Spacer
+        Label organelleEnergyLabel = new Label("Organelle Energy: 8", skin);
+        organelleEnergyLabel.addListener(createTooltip("Energy generated per organelle per second. Higher values allow molecules with organelles to sustain themselves indefinitely. Max (~50) can keep large molecules alive.", skin));
+        Slider organelleEnergySlider = new Slider(0f, 50f, 2f, false, skin);
+        organelleEnergySlider.setValue(physicsWorld.getOrganelleEnergyRate());
+        
+        organelleEnergySlider.addListener(new ChangeListener() {
+            @Override
+            public void changed(ChangeEvent event, Actor actor) {
+                float rate = organelleEnergySlider.getValue();
+                physicsWorld.setOrganelleEnergyRate(rate);
+                organelleEnergyLabel.setText(String.format("Organelle Energy: %.0f", rate));
+            }
+        });
+        
+        table.add(organelleEnergyLabel).padBottom(5).row();
+        table.add(organelleEnergySlider).width(200).row();
+        
         // Create scroll pane for the content
         ScrollPane scrollPane = new ScrollPane(contentTable, skin);
         scrollPane.setFadeScrollBars(false);
@@ -500,7 +594,7 @@ public class AutomatonGame extends ApplicationAdapter {
         Array<Bond> bondsToRemove = new Array<>(bonds);
         
         for (Bond bond : bondsToRemove) {
-            physicsWorld.destroyBond(bond, false);  // No violent reactions on restart
+            physicsWorld.destroyBond(bond, false, true);  // No violent reactions on restart
         }
         
         for (Particle particle : particlesToRemove) {
@@ -536,6 +630,7 @@ public class AutomatonGame extends ApplicationAdapter {
         }
         
         float delta = Gdx.graphics.getDeltaTime();
+        totalTime += delta; // Track total time for animations
         
         // Update camera for keyboard panning (arrow keys) and zoom (+/- keys)
         cameraController.update(delta);
@@ -559,7 +654,7 @@ public class AutomatonGame extends ApplicationAdapter {
         movingEnergyFieldRenderer.render(physicsWorld.getMovingFields(), camera);
         
         bondRenderer.render(physicsWorld.getActiveBonds(), camera);
-        particleRenderer.render(physicsWorld.getActiveParticles(), camera);
+        particleRenderer.render(physicsWorld.getActiveParticles(), camera, totalTime);
         
         // Render UI on top if visible
         if (uiVisible) {

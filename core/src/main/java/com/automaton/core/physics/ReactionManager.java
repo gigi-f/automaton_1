@@ -25,8 +25,8 @@ public class ReactionManager {
     
     // Default bond properties for reactions
     private BondType defaultBondType = BondType.ELASTIC;
-    private float defaultStiffness = 50f;
-    private float defaultDamping = 2f;
+    private float defaultStiffness = 35f;  // Reduced from 50 for more flexibility
+    private float defaultDamping = 3f;  // Increased from 2 for better stability
     private float defaultBreakForce = 200f;
     
     public ReactionManager(PhysicsWorld physicsWorld, long seed) {
@@ -55,11 +55,17 @@ public class ReactionManager {
             Particle particle = particles.get(i);
             if (!particle.isActive() || !particle.isAlive()) continue; // Dead particles cannot form bonds
             
+            // Check if particle is locked from mitosis (use PhysicsWorld method)
+            if (physicsWorld.isParticleMitosisLocked(particle)) continue;
+            
             // Query nearby particles using spatial hash grid
             Array<Particle> neighbors = physicsWorld.queryNeighbors(particle, bondFormationRadius);
             
             for (Particle neighbor : neighbors) {
                 if (!neighbor.isActive() || !neighbor.isAlive()) continue; // Dead particles cannot form bonds
+                
+                // Check if neighbor is locked from mitosis (use PhysicsWorld method)
+                if (physicsWorld.isParticleMitosisLocked(neighbor)) continue;
                 
                 // Check if already bonded
                 if (areBonded(particle, neighbor)) continue;
