@@ -276,6 +276,26 @@ public class AutomatonGame extends ApplicationAdapter {
         
         table.add(metabolismLabel).padBottom(5).row();
         table.add(metabolismSlider).width(200).row();
+
+        // Organelle replication interval slider
+        table.add(new Label("", skin)).padTop(15).row(); // Spacer
+        final Label organelleReplicationLabel = new Label("Organelle Replication: 30s", skin);
+        organelleReplicationLabel.addListener(createTooltip("Time (in seconds) before an organelle inside a cell self-replicates. Set to 0 to disable replication.", skin));
+        final Slider organelleReplicationSlider = new Slider(0f, 120f, 1f, false, skin);
+        organelleReplicationSlider.setValue(physicsWorld.getOrganelleReplicationInterval());
+        organelleReplicationLabel.setText(formatOrganelleReplicationLabel(organelleReplicationSlider.getValue()));
+
+        organelleReplicationSlider.addListener(new ChangeListener() {
+            @Override
+            public void changed(ChangeEvent event, Actor actor) {
+                float interval = organelleReplicationSlider.getValue();
+                physicsWorld.setOrganelleReplicationInterval(interval);
+                organelleReplicationLabel.setText(formatOrganelleReplicationLabel(interval));
+            }
+        });
+
+        table.add(organelleReplicationLabel).padBottom(5).row();
+        table.add(organelleReplicationSlider).width(200).row();
         
         // Activation Energy slider (minimum energy for bond formation)
         table.add(new Label("", skin)).padTop(15).row(); // Spacer
@@ -665,6 +685,13 @@ public class AutomatonGame extends ApplicationAdapter {
         tooltip.getActor().setWrap(true);
         tooltip.setInstant(false);
         return tooltip;
+    }
+
+    private String formatOrganelleReplicationLabel(float interval) {
+        if (interval <= 0f) {
+            return "Organelle Replication: Off";
+        }
+        return String.format("Organelle Replication: %.0fs", interval);
     }
 
     private void updateMonochromeRenderers() {

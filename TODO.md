@@ -122,6 +122,14 @@ High-level tasks
   - Visual indicator for dead particles (grayscale, reduced opacity, or distinct marker)
   - Acceptance: dead particles visible but inactive, can be consumed for energy
 
+- [ ] Cellular organelle roadmap
+  - [ ] Implement "carrier" organelle type that can ferry energy between neighboring cells without leaving their host membrane.
+  - [ ] Add visualization/state debugging for different organelle classes so it's clear which provide photosynthesis vs. transport.
+
+- [x] Organelle immortality & replication controls
+  - Organelles trapped inside a cell no longer lose energy or die, ensuring consistent power sources for the host membrane.
+  - Added UI slider for "Organelle Replication" to control the time (seconds) it takes for organelles to self-replicate inside a cell, with "Off" option at 0 seconds.
+
 Notes and assumptions
 - We'll start with a desktop-only libGDX project for fast iteration; mobile/Android can be added later.
 - **Hybrid physics**: Box2D bodies for particle motion/collisions, custom spring constraints for bonds (NOT Box2D joints) to avoid joint solver bottleneck.

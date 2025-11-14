@@ -11,7 +11,11 @@ import com.badlogic.gdx.utils.Array;
 import com.badlogic.gdx.utils.Disposable;
 import com.badlogic.gdx.utils.IntFloatMap;
 import com.badlogic.gdx.utils.IntIntMap;
+import com.badlogic.gdx.utils.IntMap;
 import com.badlogic.gdx.utils.LongMap;
+import com.badlogic.gdx.utils.ObjectFloatMap;
+import com.badlogic.gdx.utils.ObjectMap;
+import com.badlogic.gdx.utils.ObjectSet;
 
 /**
  * Wrapper around the Box2D {@link World} managing particle lifecycle, pooling and
@@ -29,6 +33,9 @@ public final class PhysicsWorld implements Disposable {
     private static final float MIN_MITOSIS_PUSH_FORCE = 400f;
     private static final float MAX_MITOSIS_PUSH_FORCE = 2500f;
     private static final float MITOSIS_PUSH_FORCE_SCALE = 6f;
+    private static final float MAX_ORGANELLE_ENERGY_RATE = 50f;
+    private static final float BOND_RESTORATION_RATE = 300f;
+    private static final float BOND_REJUVENATION_RATE = 60f;
 
     private final World world;
     private final ParticlePool particlePool;
@@ -62,7 +69,10 @@ public final class PhysicsWorld implements Disposable {
     private float suctionRange;  // How far molecules pull food
     private float suctionForce;  // Base suction force strength
     private float organelleEnergyRate;  // Energy generation per organelle per second
+    private float organelleReplicationInterval;
     private boolean componentsNeedRebuild;
+    private final ObjectFloatMap<Particle> organelleReplicationTimers;
+    private final Array<Particle> organelleBuffer;
     
     // Mitosis event tracking
     private static class MitosisEvent {
@@ -84,6 +94,136 @@ public final class PhysicsWorld implements Disposable {
         BondBucket(int cellX, int cellY) {
             this.cellX = cellX;
             this.cellY = cellY;
+        }
+    }
+
+    private static class DirectedEdge {
+        final Particle from;
+        final Particle to;
+        final float angle;
+        boolean visited;
+
+        DirectedEdge(Particle from, Particle to) {
+            this.from = from;
+            this.to = to;
+            Vector2 fromPos = from.getPosition();
+            Vector2 toPos = to.getPosition();
+            this.angle = MathUtils.atan2(toPos.y - fromPos.y, toPos.x - fromPos.x);
+            this.visited = false;
+        }
+    }
+
+    private static class CellStructure {
+        final int componentId;
+        final Array<Vector2> vertices = new Array<>();
+        final Array<Particle> boundaryParticles = new Array<>();
+        final Array<Particle> memberParticles = new Array<>();
+        final ObjectSet<Particle> memberSet = new ObjectSet<>();
+        float minX = Float.MAX_VALUE;
+        float maxX = -Float.MAX_VALUE;
+        float minY = Float.MAX_VALUE;
+        float maxY = -Float.MAX_VALUE;
+        float area;
+
+        CellStructure(int componentId) {
+            this.componentId = componentId;
+        }
+
+        void addVertex(Particle particle) {
+            boundaryParticles.add(particle);
+            Vector2 position = particle.getPosition();
+            vertices.add(position.cpy());
+            registerBounds(position);
+        }
+
+        void registerBounds(Vector2 pos) {
+            minX = Math.min(minX, pos.x);
+            maxX = Math.max(maxX, pos.x);
+            minY = Math.min(minY, pos.y);
+            maxY = Math.max(maxY, pos.y);
+        }
+
+        boolean contains(Vector2 point) {
+            if (vertices.size < 3) return false;
+            if (point.x < minX || point.x > maxX || point.y < minY || point.y > maxY) {
+                return false;
+            }
+            int intersections = 0;
+            for (int i = 0; i < vertices.size; i++) {
+                Vector2 v1 = vertices.get(i);
+                Vector2 v2 = vertices.get((i + 1) % vertices.size);
+                if (rayIntersectsSegment(point, v1, v2)) {
+                    intersections++;
+                }
+            }
+            return (intersections % 2) == 1;
+        }
+
+        boolean containsParticle(Particle particle) {
+            return memberSet.contains(particle);
+        }
+
+        void finalizeMembers(Array<Particle> moleculeParticles) {
+            memberParticles.clear();
+            memberSet.clear();
+            ObjectSet<Particle> boundarySet = new ObjectSet<>(boundaryParticles.size);
+            for (Particle boundary : boundaryParticles) {
+                memberParticles.add(boundary);
+                memberSet.add(boundary);
+                boundarySet.add(boundary);
+            }
+            for (Particle particle : moleculeParticles) {
+                if (boundarySet.contains(particle)) continue;
+                if (!particle.isActive() || !particle.isAlive()) continue;
+                if (contains(particle.getPosition())) {
+                    memberParticles.add(particle);
+                    memberSet.add(particle);
+                }
+            }
+        }
+
+        Vector2 closestPoint(Vector2 point, Vector2 out) {
+            float closestDist2 = Float.MAX_VALUE;
+            Vector2 best = null;
+            for (int i = 0; i < vertices.size; i++) {
+                Vector2 v1 = vertices.get(i);
+                Vector2 v2 = vertices.get((i + 1) % vertices.size);
+                Vector2 candidate = getClosestPointOnSegment(point, v1, v2);
+                float dx = point.x - candidate.x;
+                float dy = point.y - candidate.y;
+                float dist2 = dx * dx + dy * dy;
+                if (dist2 < closestDist2) {
+                    closestDist2 = dist2;
+                    best = candidate;
+                }
+            }
+            if (best == null) {
+                out.set(point);
+            } else {
+                out.set(best);
+            }
+            return out;
+        }
+
+        Vector2 getCentroid(Vector2 out) {
+            if (vertices.size == 0) {
+                return out.set(0f, 0f);
+            }
+            if (Math.abs(area) < 0.0001f) {
+                return out.set(vertices.first());
+            }
+            float cx = 0f;
+            float cy = 0f;
+            for (int i = 0; i < vertices.size; i++) {
+                Vector2 current = vertices.get(i);
+                Vector2 next = vertices.get((i + 1) % vertices.size);
+                float cross = current.x * next.y - next.x * current.y;
+                cx += (current.x + next.x) * cross;
+                cy += (current.y + next.y) * cross;
+            }
+            float factor = 1f / (6f * area);
+            out.set(cx * factor, cy * factor);
+            return out;
         }
     }
     private final Array<MitosisEvent> activeMitosisEvents;
@@ -108,7 +248,8 @@ public final class PhysicsWorld implements Disposable {
         this.huntingForce = 40f;  // Default: 40 force units toward food
         this.suctionRange = 8f;  // Default: pull food within 8 units
         this.suctionForce = 60f;  // Default: 60 force units for suction
-        this.organelleEnergyRate = 8f;  // Default: 8 energy/sec per organelle
+    this.organelleEnergyRate = 8f;  // Default: 8 energy/sec per organelle
+    this.organelleReplicationInterval = 30f; // Default: replicate every 30 seconds
         this.world = new World(gravity, true);
         this.particlePool = new ParticlePool(initialParticleCapacity, Integer.MAX_VALUE);
         this.bondPool = new BondPool(initialParticleCapacity * 2, Integer.MAX_VALUE);
@@ -132,6 +273,205 @@ public final class PhysicsWorld implements Disposable {
         this.corpsesToRemove = new Array<>();
         this.activeMitosisEvents = new Array<>();
         this.componentsNeedRebuild = false;
+        this.organelleReplicationTimers = new ObjectFloatMap<>();
+        this.organelleBuffer = new Array<>();
+    }
+
+    private IntMap<Array<CellStructure>> detectCellsByComponent() {
+        IntMap<Array<CellStructure>> cellsByComponent = new IntMap<>();
+
+        IntMap<Array<Particle>> moleculeGroups = new IntMap<>();
+        for (Particle particle : activeParticles) {
+            if (!particle.isActive() || !particle.isAlive()) continue;
+            if (particle.isOrganelle()) continue;
+            int componentId = particle.getComponentId();
+            Array<Particle> group = moleculeGroups.get(componentId);
+            if (group == null) {
+                group = new Array<>();
+                moleculeGroups.put(componentId, group);
+            }
+            group.add(particle);
+        }
+
+        for (IntMap.Entry<Array<Particle>> entry : moleculeGroups) {
+            Array<CellStructure> cells = buildCellsForMolecule(entry.value, entry.key);
+            if (cells.size > 0) {
+                cellsByComponent.put(entry.key, cells);
+            }
+        }
+
+        return cellsByComponent;
+    }
+
+    private Array<Particle> collectActiveOrganelles() {
+        organelleBuffer.clear();
+        for (Particle particle : activeParticles) {
+            if (particle.isActive() && particle.isOrganelle()) {
+                organelleBuffer.add(particle);
+            }
+        }
+        return organelleBuffer;
+    }
+
+    private Array<CellStructure> buildCellsForMolecule(Array<Particle> moleculeParticles, int componentId) {
+        Array<CellStructure> cells = new Array<>();
+        if (moleculeParticles.size < 3) {
+            return cells;
+        }
+
+        ObjectSet<Particle> moleculeSet = new ObjectSet<>(moleculeParticles.size);
+        for (Particle particle : moleculeParticles) {
+            moleculeSet.add(particle);
+        }
+        ObjectMap<Particle, Array<DirectedEdge>> adjacency = new ObjectMap<>();
+        Array<DirectedEdge> allEdges = new Array<>();
+
+        for (Bond bond : activeBonds) {
+            if (!bond.isActive()) continue;
+            Particle a = bond.getParticleA();
+            Particle b = bond.getParticleB();
+            if (!moleculeSet.contains(a) || !moleculeSet.contains(b)) continue;
+            if (a.isOrganelle() || b.isOrganelle()) continue;
+            DirectedEdge edgeAB = addDirectedEdge(a, b, adjacency);
+            DirectedEdge edgeBA = addDirectedEdge(b, a, adjacency);
+            if (edgeAB != null) allEdges.add(edgeAB);
+            if (edgeBA != null) allEdges.add(edgeBA);
+        }
+
+        for (ObjectMap.Entry<Particle, Array<DirectedEdge>> entry : adjacency.entries()) {
+            entry.value.sort((e1, e2) -> Float.compare(e1.angle, e2.angle));
+        }
+
+        for (DirectedEdge edge : allEdges) {
+            if (edge.visited) continue;
+            Array<Particle> polygonParticles = new Array<>();
+            DirectedEdge current = edge;
+            boolean valid = true;
+            while (true) {
+                current.visited = true;
+                polygonParticles.add(current.from);
+                DirectedEdge next = getNextEdge(current, adjacency);
+                if (next == null) {
+                    valid = false;
+                    break;
+                }
+                current = next;
+                if (current == edge) {
+                    break;
+                }
+            }
+
+            if (!valid || polygonParticles.size < 3) {
+                continue;
+            }
+
+            CellStructure cell = new CellStructure(componentId);
+            for (Particle particle : polygonParticles) {
+                cell.addVertex(particle);
+            }
+
+            cell.area = computePolygonArea(cell.vertices);
+            if (Math.abs(cell.area) < 0.01f) {
+                continue;
+            }
+            if (cell.area < 0f) {
+                // Reverse winding to keep cells CCW
+                cell.area = -cell.area;
+                cell.vertices.reverse();
+                cell.boundaryParticles.reverse();
+                // Recompute bounds after reversing
+                cell.minX = Float.MAX_VALUE;
+                cell.maxX = -Float.MAX_VALUE;
+                cell.minY = Float.MAX_VALUE;
+                cell.maxY = -Float.MAX_VALUE;
+                for (Vector2 vertex : cell.vertices) {
+                    cell.registerBounds(vertex);
+                }
+            }
+
+            cell.finalizeMembers(moleculeParticles);
+            if (cell.memberParticles.size >= 3) {
+                cells.add(cell);
+            }
+        }
+
+        return cells;
+    }
+
+    private DirectedEdge addDirectedEdge(Particle from, Particle to, ObjectMap<Particle, Array<DirectedEdge>> adjacency) {
+        Array<DirectedEdge> edges = adjacency.get(from);
+        if (edges == null) {
+            edges = new Array<>();
+            adjacency.put(from, edges);
+        }
+
+        // Prevent duplicate edges between the same pair
+        for (DirectedEdge existing : edges) {
+            if (existing.to == to) {
+                return null;
+            }
+        }
+
+        DirectedEdge edge = new DirectedEdge(from, to);
+        edges.add(edge);
+        return edge;
+    }
+
+    private DirectedEdge getNextEdge(DirectedEdge current, ObjectMap<Particle, Array<DirectedEdge>> adjacency) {
+        Array<DirectedEdge> edgesFromTarget = adjacency.get(current.to);
+        if (edgesFromTarget == null || edgesFromTarget.size < 2) {
+            return null;
+        }
+
+        int reverseIndex = -1;
+        for (int i = 0; i < edgesFromTarget.size; i++) {
+            if (edgesFromTarget.get(i).to == current.from) {
+                reverseIndex = i;
+                break;
+            }
+        }
+
+        if (reverseIndex == -1) {
+            return null;
+        }
+
+        int nextIndex = (reverseIndex - 1 + edgesFromTarget.size) % edgesFromTarget.size;
+        return edgesFromTarget.get(nextIndex);
+    }
+
+    private float computePolygonArea(Array<Vector2> vertices) {
+        if (vertices.size < 3) return 0f;
+        float area = 0f;
+        for (int i = 0; i < vertices.size; i++) {
+            Vector2 current = vertices.get(i);
+            Vector2 next = vertices.get((i + 1) % vertices.size);
+            area += current.x * next.y - next.x * current.y;
+        }
+        return area * 0.5f;
+    }
+
+    private ObjectMap<Particle, CellStructure> mapOrganellesToCells(Array<Particle> organelles,
+                                                                    IntMap<Array<CellStructure>> cellsByComponent) {
+        ObjectMap<Particle, CellStructure> mapping = new ObjectMap<>();
+        if (cellsByComponent == null || organelles.size == 0) return mapping;
+
+        for (Particle organelle : organelles) {
+            Vector2 pos = organelle.getPosition();
+            for (IntMap.Entry<Array<CellStructure>> entry : cellsByComponent) {
+                Array<CellStructure> cells = entry.value;
+                for (CellStructure cell : cells) {
+                    if (cell.containsParticle(organelle) || cell.contains(pos)) {
+                        mapping.put(organelle, cell);
+                        break;
+                    }
+                }
+                if (mapping.containsKey(organelle)) {
+                    break;
+                }
+            }
+        }
+
+        return mapping;
     }
     
     public BondProperties getBondProperties() {
@@ -253,6 +593,14 @@ public final class PhysicsWorld implements Disposable {
     public float getOrganelleEnergyRate() {
         return organelleEnergyRate;
     }
+
+    public void setOrganelleReplicationInterval(float intervalSeconds) {
+        this.organelleReplicationInterval = Math.max(0f, intervalSeconds);
+    }
+
+    public float getOrganelleReplicationInterval() {
+        return organelleReplicationInterval;
+    }
     
     public Array<MovingEnergyField> getMovingFields() {
         return movingFields;
@@ -366,12 +714,17 @@ public final class PhysicsWorld implements Disposable {
         activeParticles.removeValue(particle, true);
         particlePool.free(particle);
         componentsNeedRebuild = true;
+        organelleReplicationTimers.remove(particle, 0f);
     }
 
     public Bond createBond(Particle a, Particle b, BondType type, float stiffness, 
                            float damping, float breakForceThreshold) {
         if (a == null || b == null || !a.isActive() || !b.isActive()) {
             return null;
+        }
+
+        if (a.isOrganelle() || b.isOrganelle()) {
+            return null; // Organelles never form structural bonds
         }
         
         // Get multipliers based on particle types
@@ -483,11 +836,11 @@ public final class PhysicsWorld implements Disposable {
         // Spawn food particles at configured rate
         spawnFoodParticles(delta);
         
-        // Process energy absorption from food particles
-        processEnergyAbsorption(delta);
+    // Process energy absorption from food particles
+    processEnergyAbsorption(delta);
         
-        // Apply energy decay and bond costs
-        applyEnergyMechanics(delta);
+    // Apply energy decay and bond costs
+    applyEnergyMechanics(delta);
         
         // Apply chemotaxis forces (gradient following)
         applyChemotaxis();
@@ -522,14 +875,27 @@ public final class PhysicsWorld implements Disposable {
         // Process corpse consumption by molecular structures
         processCellInteriorConsumption();
         
-        // Process organelle absorption (GREEN particles become trapped energy generators)
-        processOrganelleAbsorption();
-        
-        // Process organelle containment, boundary pushing, and inter-organelle bonding
-        processOrganelleContainment();
-        
-        // Break organelle bonds when cells separate
-        pruneOrganelleBonds();
+    // Detect closed cells once per step for organelle logic
+    IntMap<Array<CellStructure>> cellsByComponent = detectCellsByComponent();
+
+    // Process organelle absorption (GREEN particles become trapped energy generators)
+    processOrganelleAbsorption(cellsByComponent);
+
+    Array<Particle> organelles = collectActiveOrganelles();
+    ObjectMap<Particle, CellStructure> organelleCells =
+        (organelles.size == 0) ? null : mapOrganellesToCells(organelles, cellsByComponent);
+
+    // Process organelle containment, boundary pushing, and inter-organelle bonding
+    processOrganelleContainment(cellsByComponent, organelles, organelleCells);
+
+    // Break organelle bonds when cells separate
+    pruneOrganelleBonds(cellsByComponent, organelleCells);
+
+    // Handle organelle self-replication timer and spawning
+    processOrganelleReplication(delta, cellsByComponent, organelles, organelleCells);
+
+    // Apply organelle energy generation per detected cell
+    applyOrganelleEnergyGeneration(delta, cellsByComponent, organelleCells);
         
         // Check for crossing bonds within same molecule and break them
         detectAndBreakCrossingBonds();
@@ -731,6 +1097,7 @@ public final class PhysicsWorld implements Disposable {
         for (int i = 0; i < activeParticles.size; i++) {
             Particle particle = activeParticles.get(i);
             if (!particle.isActive()) continue;
+            if (particle.isOrganelle()) continue;
             
             // Base energy decay
             float decay = energyDecayRate * delta;
@@ -774,80 +1141,75 @@ public final class PhysicsWorld implements Disposable {
             particle.addEnergy(environmentalGain);
         }
         
-        // Organelle energy generation - organelles produce energy for nearby bonded particles
-        applyOrganelleEnergyGeneration(delta);
     }
     
     /**
      * Organelles generate energy for nearby particles in the same molecule.
      * Acts like photosynthesis - passive energy production that scales with organelle count.
      */
-    private void applyOrganelleEnergyGeneration(float delta) {
-        final float ORGANELLE_RANGE = 5.0f; // How far organelles can provide energy
-        
-        if (organelleEnergyRate <= 0f) return; // Organelle energy generation disabled
-        
-        // Group particles by molecule
-        com.badlogic.gdx.utils.IntMap<Array<Particle>> moleculeGroups = new com.badlogic.gdx.utils.IntMap<>();
-        for (Particle particle : activeParticles) {
-            if (!particle.isActive() || !particle.isAlive()) continue;
-            if (particle.isOrganelle()) continue; // Organelles themselves don't receive energy
-            
-            int componentId = particle.getComponentId();
-            Array<Particle> group = moleculeGroups.get(componentId);
-            if (group == null) {
-                group = new Array<>();
-                moleculeGroups.put(componentId, group);
-            }
-            group.add(particle);
-        }
-        
-        // Find all organelles
-        Array<Particle> organelles = new Array<>();
-        for (Particle p : activeParticles) {
-            if (p.isActive() && p.isOrganelle()) {
-                organelles.add(p);
+    private void applyOrganelleEnergyGeneration(float delta,
+                                                IntMap<Array<CellStructure>> cellsByComponent,
+                                                ObjectMap<Particle, CellStructure> organelleCells) {
+        if (organelleEnergyRate <= 0f || cellsByComponent == null || cellsByComponent.size == 0) return;
+        if (organelleCells == null || organelleCells.size == 0) return;
+
+        ObjectMap<CellStructure, Integer> organelleCountByCell = new ObjectMap<>();
+        for (ObjectMap.Entry<Particle, CellStructure> entry : organelleCells.entries()) {
+            CellStructure cell = entry.value;
+            Integer count = organelleCountByCell.get(cell);
+            if (count == null) {
+                organelleCountByCell.put(cell, 1);
+            } else {
+                organelleCountByCell.put(cell, count + 1);
             }
         }
-        
-        // For each molecule, calculate energy gain from nearby organelles
-        for (com.badlogic.gdx.utils.IntMap.Entry<Array<Particle>> entry : moleculeGroups) {
-            Array<Particle> molecule = entry.value;
-            int moleculeComponentId = entry.key;
-            
-            // Find organelles that belong to this molecule (same component ID)
-            Array<Particle> moleculeOrganelles = new Array<>();
-            for (Particle org : organelles) {
-                // Organelles don't bond, so we check spatial proximity to determine membership
-                // An organelle belongs to a molecule if it's close to any particle in that molecule
-                for (Particle p : molecule) {
-                    Vector2 orgPos = org.getPosition();
-                    Vector2 pPos = p.getPosition();
-                    float dx = orgPos.x - pPos.x;
-                    float dy = orgPos.y - pPos.y;
-                    float distSq = dx * dx + dy * dy;
-                    
-                    if (distSq < ORGANELLE_RANGE * ORGANELLE_RANGE) {
-                        moleculeOrganelles.add(org);
-                        break; // Found membership, don't need to check other particles
-                    }
-                }
-            }
-            
-            if (moleculeOrganelles.size == 0) continue; // No organelles, no energy generation
-            
-            // Calculate energy generation: scales with organelle count (diminishing returns)
-            // Formula: base * count * (1 - 0.05 * count) to prevent exponential growth
-            // 1 organelle = 1.0x, 2 = 1.9x, 3 = 2.7x, 4 = 3.4x, 5 = 3.75x (plateaus)
-            float organelleCount = moleculeOrganelles.size;
-            float generationMultiplier = organelleCount * (1.0f - 0.05f * Math.min(organelleCount, 10f));
+
+        for (ObjectMap.Entry<CellStructure, Integer> entry : organelleCountByCell.entries()) {
+            CellStructure cell = entry.key;
+            int organelleCount = entry.value;
+            if (cell.memberParticles.size == 0 || organelleCount == 0) continue;
+
+            float count = organelleCount;
+            float generationMultiplier = count * (1.0f - 0.05f * Math.min(count, 10f));
             float totalEnergyGeneration = organelleEnergyRate * generationMultiplier * delta;
-            
-            // Distribute energy equally to all particles in molecule
-            float energyPerParticle = totalEnergyGeneration / molecule.size;
-            for (Particle p : molecule) {
-                p.addEnergy(energyPerParticle);
+            float energyPerParticle = totalEnergyGeneration / cell.memberParticles.size;
+
+            for (Particle member : cell.memberParticles) {
+                if (!member.isActive() || !member.isAlive()) continue;
+                member.addEnergy(energyPerParticle);
             }
+
+            reinforceCellBoundaryBonds(cell, organelleCount, delta);
+        }
+    }
+
+    private void reinforceCellBoundaryBonds(CellStructure cell, int organelleCount, float delta) {
+        if (cell == null || organelleCount <= 0) {
+            return;
+        }
+        if (organelleEnergyRate <= 0f || cell.boundaryParticles.size < 3) {
+            return;
+        }
+
+        float energyRatio = MAX_ORGANELLE_ENERGY_RATE <= 0f ? 0f :
+            Math.min(1f, organelleEnergyRate / MAX_ORGANELLE_ENERGY_RATE);
+        if (energyRatio <= 0f) {
+            return;
+        }
+
+        float reinforcementFactor = organelleCount * energyRatio;
+        float breakForceGain = reinforcementFactor * BOND_RESTORATION_RATE * delta;
+        float ageReduction = reinforcementFactor * BOND_REJUVENATION_RATE * delta;
+
+        for (int i = 0; i < cell.boundaryParticles.size; i++) {
+            Particle a = cell.boundaryParticles.get(i);
+            Particle b = cell.boundaryParticles.get((i + 1) % cell.boundaryParticles.size);
+            Bond bond = findActiveBondBetween(a, b);
+            if (bond == null) {
+                continue;
+            }
+            bond.increaseBreakForceThreshold(breakForceGain);
+            bond.rejuvenate(ageReduction);
         }
     }
     
@@ -863,6 +1225,7 @@ public final class PhysicsWorld implements Disposable {
         
         for (Particle particle : activeParticles) {
             if (!particle.isActive() || !particle.isAlive()) continue;
+            if (particle.isOrganelle()) continue;
             
             Vector2 particlePos = particle.getPosition();
             ParticleType particleType = particle.getType();
@@ -917,6 +1280,7 @@ public final class PhysicsWorld implements Disposable {
         com.badlogic.gdx.utils.IntMap<Array<Particle>> moleculeGroups = new com.badlogic.gdx.utils.IntMap<>();
         for (Particle particle : activeParticles) {
             if (!particle.isActive() || !particle.isAlive()) continue;
+            if (particle.isOrganelle()) continue;
             
             int componentId = particle.getComponentId();
             Array<Particle> group = moleculeGroups.get(componentId);
@@ -1115,6 +1479,7 @@ public final class PhysicsWorld implements Disposable {
         
         for (Particle particle : activeParticles) {
             if (!particle.isActive() || !particle.isAlive()) continue;
+            if (particle.isOrganelle()) continue;
             
             Vector2 particlePos = particle.getPosition();
             
@@ -1132,6 +1497,7 @@ public final class PhysicsWorld implements Disposable {
             
             for (Particle neighbor : neighbors) {
                 if (!neighbor.isAlive()) continue; // Don't interact with corpses
+                if (neighbor.isOrganelle()) continue;
                 
                 Vector2 neighborPos = neighbor.getPosition();
                 float dx = particlePos.x - neighborPos.x;
@@ -1171,6 +1537,7 @@ public final class PhysicsWorld implements Disposable {
         com.badlogic.gdx.utils.IntMap<Array<Particle>> moleculeGroups = new com.badlogic.gdx.utils.IntMap<>();
         for (Particle particle : activeParticles) {
             if (!particle.isActive() || !particle.isAlive()) continue;
+            if (particle.isOrganelle()) continue;
             
             int componentId = particle.getComponentId();
             Array<Particle> group = moleculeGroups.get(componentId);
@@ -1190,10 +1557,12 @@ public final class PhysicsWorld implements Disposable {
             // Apply repulsion between all pairs within the molecule
             for (int i = 0; i < molecule.size; i++) {
                 Particle pA = molecule.get(i);
+                if (pA.isOrganelle()) continue;
                 Vector2 posA = pA.getPosition();
                 
                 for (int j = i + 1; j < molecule.size; j++) {
                     Particle pB = molecule.get(j);
+                    if (pB.isOrganelle()) continue;
                     Vector2 posB = pB.getPosition();
                     
                     float dx = posA.x - posB.x;
@@ -1868,6 +2237,7 @@ public final class PhysicsWorld implements Disposable {
         Array<Particle> particlesToKill = new Array<>();
         
         for (Particle particle : activeParticles) {
+            if (particle.isOrganelle()) continue;
             if (particle.isActive() && particle.getEnergy() <= 0f && particle.isAlive()) {
                 particlesToKill.add(particle);
             }
@@ -2007,152 +2377,254 @@ public final class PhysicsWorld implements Disposable {
      * become trapped organelles that strengthen bonds and generate energy.
      * This simulates cellular organelles like chloroplasts.
      */
-    private void processOrganelleAbsorption() {
-        // Group living particles by component ID (molecules)
-        com.badlogic.gdx.utils.IntMap<Array<Particle>> moleculeGroups = new com.badlogic.gdx.utils.IntMap<>();
+    private void processOrganelleAbsorption(IntMap<Array<CellStructure>> cellsByComponent) {
+        if (cellsByComponent == null || cellsByComponent.size == 0) return;
+
+        Array<Particle> candidateOrganelles = new Array<>();
         for (Particle particle : activeParticles) {
-            if (!particle.isActive() || !particle.isAlive() || particle.isOrganelle()) continue;
-            
-            int componentId = particle.getComponentId();
-            Array<Particle> group = moleculeGroups.get(componentId);
-            if (group == null) {
-                group = new Array<>();
-                moleculeGroups.put(componentId, group);
-            }
-            group.add(particle);
+            if (!particle.isActive() || !particle.isAlive()) continue;
+            if (particle.isOrganelle()) continue;
+            if (particle.getType() != ParticleType.TRUE) continue;
+            candidateOrganelles.add(particle);
         }
-        
-        // For each molecule with 3+ particles, check for GREEN particles inside
-        for (com.badlogic.gdx.utils.IntMap.Entry<Array<Particle>> entry : moleculeGroups) {
-            Array<Particle> molecule = entry.value;
-            
-            if (molecule.size < 3) continue; // Need at least 3 bonded particles for interior
-            
-            // Build convex hull of the molecule
-            Array<Particle> hull = buildConvexHull(molecule);
-            if (hull.size < 3) continue;
-            
-            // Check all GREEN particles to see if they're inside this molecule
-            for (Particle candidate : activeParticles) {
-                if (!candidate.isActive() || !candidate.isAlive()) continue;
-                if (candidate.isOrganelle()) continue; // Already an organelle
-                if (candidate.getType() != ParticleType.TRUE) continue; // Only GREEN particles
-                if (molecule.contains(candidate, true)) continue; // Don't absorb our own particles
-                
-                // Check if candidate is inside the hull
-                if (isPointInPolygon(candidate.getPosition(), hull)) {
-                    // Convert to organelle!
-                    candidate.setOrganelle(true);
-                    candidate.setEnergy(100f); // Organelles are energy-saturated
-                    
-                    // Assign to this cell's component (so it knows which cell it belongs to)
-                    int cellComponentId = molecule.get(0).getComponentId();
-                    candidate.setComponentId(cellComponentId);
-                    
-                    // Keep some velocity so organelles can push against boundaries
-                    // Don't completely stop them like before
-                    Body body = candidate.getBody();
-                    Vector2 vel = body.getLinearVelocity();
-                    body.setLinearVelocity(vel.x * 0.3f, vel.y * 0.3f);
-                    body.setAngularVelocity(0f);
+
+        if (candidateOrganelles.size == 0) return;
+
+        for (Particle candidate : candidateOrganelles) {
+            Vector2 candidatePos = candidate.getPosition();
+            CellStructure containingCell = null;
+            for (IntMap.Entry<Array<CellStructure>> entry : cellsByComponent) {
+                Array<CellStructure> cells = entry.value;
+                for (CellStructure cell : cells) {
+                    if (cell.containsParticle(candidate)) continue;
+                    if (cell.contains(candidatePos)) {
+                        containingCell = cell;
+                        break;
+                    }
                 }
+                if (containingCell != null) break;
             }
+
+            if (containingCell == null) continue;
+            if (candidate.getComponentId() == containingCell.componentId) continue;
+
+            candidate.setOrganelle(true);
+            candidate.setEnergy(100f);
+            candidate.setComponentId(containingCell.componentId);
+            candidate.setCollisionsEnabled(false);
+            organelleReplicationTimers.put(candidate, 0f);
+
+            Body body = candidate.getBody();
+            Vector2 vel = body.getLinearVelocity();
+            body.setLinearVelocity(vel.x * 0.3f, vel.y * 0.3f);
+            body.setAngularVelocity(0f);
         }
     }
     
     /**
      * Process organelle containment and boundary interactions.
-     * Organelles push against the cell membrane (bonds) to create space while being contained.
-     * Also handles organelle-to-organelle bonding within the same cell.
+     * Organelles collide with intact membrane bonds and otherwise drift toward their host cell center.
      */
-    private void processOrganelleContainment() {
-        final float BOUNDARY_PUSH_FORCE = 80f; // Force organelles exert on boundaries
-        final float BOUNDARY_PUSH_DISTANCE = 1.5f; // Distance at which organelles start pushing
-        final float ORGANELLE_BOND_DISTANCE = 2.0f; // Distance for organelle bonding
-        
-        // Find all organelles
-        Array<Particle> organelles = new Array<>();
-        for (Particle p : activeParticles) {
-            if (p.isActive() && p.isOrganelle()) {
-                organelles.add(p);
-            }
-        }
-        
-        if (organelles.size == 0) return;
-        
-        // For each organelle, apply containment and boundary pushing
+    private void processOrganelleContainment(IntMap<Array<CellStructure>> cellsByComponent,
+                                             Array<Particle> organelles,
+                                             ObjectMap<Particle, CellStructure> organelleCells) {
+        final float MEMBRANE_COLLISION_DISTANCE = 1.2f;
+        final float INTERIOR_PULL_DISTANCE = 2.5f;
+        final float INTERIOR_PULL_FORCE = 140f;
+        final float OUTSIDE_RESCUE_FORCE = 260f;
+        if (cellsByComponent == null || cellsByComponent.size == 0) return;
+        if (organelles == null || organelles.size == 0) return;
+        if (organelleCells == null || organelleCells.size == 0) return;
+
+        Vector2 closestPoint = new Vector2();
+        Vector2 centroid = new Vector2();
+        Vector2 pullDirection = new Vector2();
         for (Particle organelle : organelles) {
+            CellStructure cell = organelleCells.get(organelle);
+            if (cell == null) continue;
+
             Vector2 orgPos = organelle.getPosition();
-            int cellComponentId = organelle.getComponentId();
-            
-            // Find all bonds in the same cell (these form the boundary)
-            Array<Bond> cellBonds = new Array<>();
-            for (Bond bond : activeBonds) {
-                if (!bond.isActive()) continue;
-                
-                Particle a = bond.getParticleA();
-                Particle b = bond.getParticleB();
-                
-                // Skip bonds involving organelles
-                if (a.isOrganelle() || b.isOrganelle()) continue;
-                
-                // Check if both particles are in the same cell as organelle
-                if (a.getComponentId() == cellComponentId && b.getComponentId() == cellComponentId) {
-                    cellBonds.add(bond);
+            boolean inside = cell.contains(orgPos);
+
+            Particle closestA = null;
+            Particle closestB = null;
+            float closestDist2 = Float.MAX_VALUE;
+
+            for (int i = 0; i < cell.boundaryParticles.size; i++) {
+                Particle a = cell.boundaryParticles.get(i);
+                Particle b = cell.boundaryParticles.get((i + 1) % cell.boundaryParticles.size);
+                Vector2 candidate = getClosestPointOnSegment(orgPos, a.getPosition(), b.getPosition());
+                float dx = orgPos.x - candidate.x;
+                float dy = orgPos.y - candidate.y;
+                float dist2 = dx * dx + dy * dy;
+                if (dist2 < closestDist2) {
+                    closestDist2 = dist2;
+                    closestPoint.set(candidate);
+                    closestA = a;
+                    closestB = b;
                 }
             }
-            
-            // Apply collision/pushing forces with cell boundary bonds
-            for (Bond bond : cellBonds) {
-                Particle a = bond.getParticleA();
-                Particle b = bond.getParticleB();
-                Vector2 posA = a.getPosition();
-                Vector2 posB = b.getPosition();
-                
-                // Find closest point on bond to organelle
-                Vector2 closestPoint = getClosestPointOnSegment(orgPos, posA, posB);
-                float dx = orgPos.x - closestPoint.x;
-                float dy = orgPos.y - closestPoint.y;
-                float dist = (float) Math.sqrt(dx * dx + dy * dy);
-                
-                if (dist < BOUNDARY_PUSH_DISTANCE && dist > 0.01f) {
-                    // Organelle is close to boundary - create pushing force
-                    float pushStrength = (BOUNDARY_PUSH_DISTANCE - dist) / BOUNDARY_PUSH_DISTANCE;
-                    
-                    // Push organelle back (containment)
-                    float containForceX = -(dx / dist) * BOUNDARY_PUSH_FORCE * pushStrength * 0.3f;
-                    float containForceY = -(dy / dist) * BOUNDARY_PUSH_FORCE * pushStrength * 0.3f;
-                    organelle.getBody().applyForceToCenter(containForceX, containForceY, true);
-                    
-                    // Push boundary particles outward (expansion)
-                    float expandForceX = (dx / dist) * BOUNDARY_PUSH_FORCE * pushStrength;
-                    float expandForceY = (dy / dist) * BOUNDARY_PUSH_FORCE * pushStrength;
-                    
-                    // Distribute force to both bond endpoints based on proximity
-                    float distToA = orgPos.dst(posA);
-                    float distToB = orgPos.dst(posB);
-                    float totalDist = distToA + distToB;
-                    
-                    if (totalDist > 0.01f) {
-                        // Closer endpoint gets more force
-                        float weightA = (1.0f - distToA / totalDist);
-                        float weightB = (1.0f - distToB / totalDist);
-                        
-                        a.getBody().applyForceToCenter(expandForceX * weightA, expandForceY * weightA, true);
-                        b.getBody().applyForceToCenter(expandForceX * weightB, expandForceY * weightB, true);
+
+            if (closestDist2 == Float.MAX_VALUE) {
+                continue;
+            }
+
+            float dist = (float) Math.sqrt(closestDist2);
+            boolean membraneIntact = false;
+            if (closestA != null && closestB != null) {
+                Bond boundaryBond = findActiveBondBetween(closestA, closestB);
+                membraneIntact = boundaryBond != null;
+                if (membraneIntact && dist < MEMBRANE_COLLISION_DISTANCE && dist > 0.0001f) {
+                    enforceOrganelleMembraneCollision(organelle, closestA, closestB, closestPoint, inside);
+                }
+            }
+
+            if (inside) {
+                if (dist < INTERIOR_PULL_DISTANCE) {
+                    cell.getCentroid(centroid);
+                    pullDirection.set(centroid).sub(orgPos);
+                    float pullLen = pullDirection.len();
+                    if (pullLen > 0.0001f) {
+                        pullDirection.scl(INTERIOR_PULL_FORCE / pullLen);
+                        organelle.getBody().applyForceToCenter(pullDirection, true);
                     }
                 }
+            } else {
+                cell.getCentroid(centroid);
+                pullDirection.set(centroid).sub(orgPos);
+                float pullLen = pullDirection.len();
+                if (pullLen > 0.0001f) {
+                    pullDirection.scl(OUTSIDE_RESCUE_FORCE / pullLen);
+                    organelle.getBody().applyForceToCenter(pullDirection, true);
+                }
             }
         }
-        
-        // Process organelle-to-organelle bonding (only within same cell)
-        processOrganelleBonding(organelles, ORGANELLE_BOND_DISTANCE);
+    }
+
+    private void processOrganelleReplication(float delta,
+                                             IntMap<Array<CellStructure>> cellsByComponent,
+                                             Array<Particle> organelles,
+                                             ObjectMap<Particle, CellStructure> organelleCells) {
+        if (organelleReplicationInterval <= 0f) return;
+        if (cellsByComponent == null || cellsByComponent.size == 0) return;
+        if (organelles == null || organelles.size == 0) return;
+        if (organelleCells == null || organelleCells.size == 0) return;
+
+        for (Particle organelle : organelles) {
+            CellStructure cell = organelleCells.get(organelle);
+            if (cell == null) continue;
+
+            float timer = organelleReplicationTimers.get(organelle, 0f) + delta;
+            if (timer >= organelleReplicationInterval) {
+                timer -= organelleReplicationInterval;
+                replicateOrganelle(organelle, cell, organelleCells);
+            }
+            organelleReplicationTimers.put(organelle, timer);
+        }
+    }
+
+    private void replicateOrganelle(Particle parent,
+                                    CellStructure cell,
+                                    ObjectMap<Particle, CellStructure> organelleCells) {
+        if (cell == null) return;
+
+        Vector2 spawnPos = new Vector2();
+        cell.getCentroid(spawnPos);
+        float jitterScale = 0.5f;
+        spawnPos.add(MathUtils.random(-jitterScale, jitterScale), MathUtils.random(-jitterScale, jitterScale));
+        if (!cell.contains(spawnPos)) {
+            cell.closestPoint(spawnPos, spawnPos);
+        }
+
+        ParticleType spawnType = parent != null ? parent.getType() : ParticleType.TRUE;
+        float visualRadius = parent != null ? parent.getVisualRadius() : 0.4f;
+        Particle newOrganelle = spawnParticle(spawnType, spawnPos, visualRadius, 1f);
+        if (newOrganelle == null) {
+            return;
+        }
+
+        newOrganelle.setOrganelle(true);
+        newOrganelle.setEnergy(100f);
+        newOrganelle.setComponentId(cell.componentId);
+    newOrganelle.setCollisionsEnabled(false);
+        newOrganelle.getBody().setLinearVelocity(0f, 0f);
+        newOrganelle.getBody().setAngularVelocity(0f);
+        organelleReplicationTimers.put(newOrganelle, 0f);
+        if (organelleCells != null) {
+            organelleCells.put(newOrganelle, cell);
+        }
+    }
+
+    private Bond findActiveBondBetween(Particle a, Particle b) {
+        if (a == null || b == null) {
+            return null;
+        }
+        for (Bond bond : activeBonds) {
+            if (!bond.isActive()) continue;
+            Particle bondA = bond.getParticleA();
+            Particle bondB = bond.getParticleB();
+            if ((bondA == a && bondB == b) || (bondA == b && bondB == a)) {
+                return bond;
+            }
+        }
+        return null;
+    }
+
+    private void enforceOrganelleMembraneCollision(Particle organelle,
+                                                   Particle boundaryA,
+                                                   Particle boundaryB,
+                                                   Vector2 closestPoint,
+                                                   boolean inside) {
+        final float COLLISION_FORCE = 420f;
+        final float COLLISION_THICKNESS = 1.0f;
+        final float BOUNCE_MULTIPLIER = 1.4f;
+        if (organelle == null || closestPoint == null) {
+            return;
+        }
+
+        Vector2 orgPos = organelle.getPosition();
+        Vector2 inwardNormal = new Vector2(orgPos).sub(closestPoint);
+        float distance = inwardNormal.len();
+        if (distance < 0.0001f) {
+            inwardNormal.set(0f, 1f);
+            distance = 0.0001f;
+        } else {
+            inwardNormal.scl(1f / distance);
+        }
+
+        Body body = organelle.getBody();
+        Vector2 velocity = body.getLinearVelocity();
+        float normalVelocity = velocity.dot(inwardNormal);
+
+        if (normalVelocity < 0f) {
+            float impulseMag = -normalVelocity * body.getMass() * BOUNCE_MULTIPLIER;
+            Vector2 impulse = new Vector2(inwardNormal).scl(impulseMag);
+            body.applyLinearImpulse(impulse, body.getWorldCenter(), true);
+        }
+
+        float penetration = Math.max(0f, COLLISION_THICKNESS - distance);
+        if (penetration > 0f) {
+            Vector2 push = new Vector2(inwardNormal).scl(COLLISION_FORCE * penetration);
+            body.applyForceToCenter(push, true);
+
+            if (boundaryA != null) {
+                boundaryA.getBody().applyForceToCenter(-push.x * 0.5f, -push.y * 0.5f, true);
+            }
+            if (boundaryB != null) {
+                boundaryB.getBody().applyForceToCenter(-push.x * 0.5f, -push.y * 0.5f, true);
+            }
+        }
+
+        if (!inside) {
+            // If the organelle slipped slightly outside, immediately nudge it back using the same force.
+            body.applyForceToCenter(new Vector2(inwardNormal).scl(COLLISION_FORCE), true);
+        }
     }
     
     /**
      * Get the closest point on a line segment to a given point.
      */
-    private Vector2 getClosestPointOnSegment(Vector2 point, Vector2 segStart, Vector2 segEnd) {
+    private static Vector2 getClosestPointOnSegment(Vector2 point, Vector2 segStart, Vector2 segEnd) {
         float dx = segEnd.x - segStart.x;
         float dy = segEnd.y - segStart.y;
         float lengthSq = dx * dx + dy * dy;
@@ -2170,56 +2642,14 @@ public final class PhysicsWorld implements Disposable {
     }
     
     /**
-     * Process bonding between organelles in the same cell.
-     * Organelles can only bond with other organelles in the same cell.
-     */
-    private void processOrganelleBonding(Array<Particle> organelles, float bondDistance) {
-        if (organelles.size < 2) return;
-        
-        // Check each pair of organelles
-        for (int i = 0; i < organelles.size; i++) {
-            Particle orgA = organelles.get(i);
-            
-            for (int j = i + 1; j < organelles.size; j++) {
-                Particle orgB = organelles.get(j);
-                
-                // Only bond organelles in the same cell
-                if (orgA.getComponentId() != orgB.getComponentId()) continue;
-                
-                // Check if already bonded
-                boolean alreadyBonded = false;
-                for (Bond bond : activeBonds) {
-                    if (!bond.isActive()) continue;
-                    if ((bond.getParticleA() == orgA && bond.getParticleB() == orgB) ||
-                        (bond.getParticleA() == orgB && bond.getParticleB() == orgA)) {
-                        alreadyBonded = true;
-                        break;
-                    }
-                }
-                
-                if (alreadyBonded) continue;
-                
-                // Check distance
-                float dist = orgA.getPosition().dst(orgB.getPosition());
-                if (dist < bondDistance) {
-                    // Create organelle bond (flexible, moderate strength)
-                    Bond bond = createBond(orgA, orgB, BondType.ELASTIC, 80f, 3f, 250f);
-                    
-                    // The createBond method already handles union-find,
-                    // but organelles should maintain their cell component ID,
-                    // not form a new independent component
-                    // (They're already part of the cell's component)
-                }
-            }
-        }
-    }
-    
-    /**
      * Break organelle bonds when their host cells separate.
      * If two organelles are no longer in the same component, their bond should break.
      */
-    private void pruneOrganelleBonds() {
+    private void pruneOrganelleBonds(IntMap<Array<CellStructure>> cellsByComponent,
+                                     ObjectMap<Particle, CellStructure> organelleCells) {
         Array<Bond> bondsToBreak = new Array<>();
+        if (cellsByComponent == null || cellsByComponent.size == 0) return;
+        if (organelleCells == null || organelleCells.size == 0) return;
         
         for (Bond bond : activeBonds) {
             if (!bond.isActive()) continue;
@@ -2229,8 +2659,9 @@ public final class PhysicsWorld implements Disposable {
             
             // Check if this is an organelle-organelle bond
             if (a.isOrganelle() && b.isOrganelle()) {
-                // If organelles are in different cells now, break the bond
-                if (a.getComponentId() != b.getComponentId()) {
+                CellStructure cellA = organelleCells.get(a);
+                CellStructure cellB = organelleCells.get(b);
+                if (cellA == null || cellB == null || cellA != cellB) {
                     bondsToBreak.add(bond);
                 }
             }
@@ -2248,63 +2679,9 @@ public final class PhysicsWorld implements Disposable {
     }
     
     /**
-     * Build a convex hull from a set of particles for interior detection.
-     */
-    private Array<Particle> buildConvexHull(Array<Particle> particles) {
-        if (particles.size < 3) return new Array<>();
-        
-        // Calculate centroid
-        float cx = 0, cy = 0;
-        for (Particle p : particles) {
-            Vector2 pos = p.getPosition();
-            cx += pos.x;
-            cy += pos.y;
-        }
-        cx /= particles.size;
-        cy /= particles.size;
-        
-        // Sort by angle from centroid
-        Array<Particle> sorted = new Array<>(particles);
-        final float centroidX = cx;
-        final float centroidY = cy;
-        
-        sorted.sort((a, b) -> {
-            Vector2 posA = a.getPosition();
-            Vector2 posB = b.getPosition();
-            float angleA = (float) Math.atan2(posA.y - centroidY, posA.x - centroidX);
-            float angleB = (float) Math.atan2(posB.y - centroidY, posB.x - centroidX);
-            return Float.compare(angleA, angleB);
-        });
-        
-        return sorted;
-    }
-    
-    /**
-     * Check if a point is inside a polygon using ray casting algorithm.
-     */
-    private boolean isPointInPolygon(Vector2 point, Array<Particle> polygon) {
-        if (polygon.size < 3) return false;
-        
-        int intersections = 0;
-        for (int i = 0; i < polygon.size; i++) {
-            Particle p1 = polygon.get(i);
-            Particle p2 = polygon.get((i + 1) % polygon.size);
-            
-            Vector2 pos1 = p1.getPosition();
-            Vector2 pos2 = p2.getPosition();
-            
-            if (rayIntersectsSegment(point, pos1, pos2)) {
-                intersections++;
-            }
-        }
-        
-        return (intersections % 2) == 1;
-    }
-    
-    /**
      * Check if a horizontal ray from point intersects the line segment.
      */
-    private boolean rayIntersectsSegment(Vector2 point, Vector2 segA, Vector2 segB) {
+    private static boolean rayIntersectsSegment(Vector2 point, Vector2 segA, Vector2 segB) {
         if (segA.y > segB.y) {
             Vector2 temp = segA;
             segA = segB;

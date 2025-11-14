@@ -83,6 +83,16 @@ public final class Bond implements Pool.Poolable {
     public void updateAge(float delta) {
         this.age += delta;
     }
+
+    /**
+     * Reduce the accumulated age on this bond, restoring its effective strength.
+     */
+    public void rejuvenate(float delta) {
+        if (delta <= 0f) {
+            return;
+        }
+        this.age = Math.max(0f, this.age - delta);
+    }
     
     /**
      * Get the effective break force threshold, reduced by aging but strengthened by nearby organelles.

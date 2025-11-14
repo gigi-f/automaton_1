@@ -54,6 +54,7 @@ public class ReactionManager {
         for (int i = 0; i < particles.size; i++) {
             Particle particle = particles.get(i);
             if (!particle.isActive() || !particle.isAlive()) continue; // Dead particles cannot form bonds
+            if (particle.isOrganelle()) continue; // Organelles never form new bonds
             
             // Check if particle is locked from mitosis (use PhysicsWorld method)
             if (physicsWorld.isParticleMitosisLocked(particle)) continue;
@@ -63,6 +64,7 @@ public class ReactionManager {
             
             for (Particle neighbor : neighbors) {
                 if (!neighbor.isActive() || !neighbor.isAlive()) continue; // Dead particles cannot form bonds
+                if (neighbor.isOrganelle()) continue; // Organelles never form new bonds
                 
                 // Check if neighbor is locked from mitosis (use PhysicsWorld method)
                 if (physicsWorld.isParticleMitosisLocked(neighbor)) continue;

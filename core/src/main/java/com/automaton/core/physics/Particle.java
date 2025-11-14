@@ -3,6 +3,7 @@ package com.automaton.core.physics;
 import com.badlogic.gdx.math.Vector2;
 import com.badlogic.gdx.physics.box2d.Body;
 import com.badlogic.gdx.physics.box2d.Filter;
+import com.badlogic.gdx.physics.box2d.Fixture;
 import com.badlogic.gdx.physics.box2d.World;
 import com.badlogic.gdx.utils.Pool;
 
@@ -133,6 +134,21 @@ public final class Particle implements Pool.Poolable {
     
     public void setOrganelle(boolean organelle) {
         this.isOrganelle = organelle;
+    }
+
+    /**
+     * Toggle whether this particle collides with other particles via Box2D fixtures.
+     * Used to isolate organelles so they only interact via custom containment forces.
+     */
+    public void setCollisionsEnabled(boolean enabled) {
+        if (body == null) {
+            return;
+        }
+        Fixture fixture = body.getFixtureList().first();
+        Filter filter = fixture.getFilterData();
+        filter.categoryBits = CATEGORY_PARTICLE;
+        filter.maskBits = enabled ? MASK_PARTICLE : 0;
+        fixture.setFilterData(filter);
     }
 
     public int getComponentId() {
