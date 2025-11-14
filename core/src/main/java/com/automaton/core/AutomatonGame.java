@@ -44,6 +44,11 @@ public class AutomatonGame extends ApplicationAdapter {
     private static final float TIME_STEP = 1f / 60f;
     private static final int VELOCITY_ITERATIONS = 6;
     private static final int POSITION_ITERATIONS = 2;
+    private static final float PERFORMANCE_FPS_THRESHOLD = 10f;
+    private static final float LOW_FPS_GRACE_PERIOD = 0.5f; // seconds below threshold before pausing
+    private static final float PERFORMANCE_STARTUP_GRACE = 2f; // allow initial loading hitch before monitoring
+    private static final String PERFORMANCE_ACTION_RESTART = "restart";
+    private static final String PERFORMANCE_ACTION_CONTINUE = "continue";
 
     private final Vector2 tmpVec = new Vector2();
     private final Random typeRandom = new Random(42L);  // For random type assignment
@@ -81,6 +86,11 @@ public class AutomatonGame extends ApplicationAdapter {
     // World configuration
     private int initialSpawnCount = 33; // Total initial particles (singles + molecules)
     private float worldSizeMultiplier = 1.0f; // Size multiplier for world dimensions
+    private boolean simulationPaused = false;
+    private boolean performanceDialogVisible = false;
+    private float lowFpsDuration = 0f;
+    private Dialog activePerformanceDialog;
+    private float timeSinceStart = 0f;
 
     @Override
     public void create() {
@@ -807,6 +817,93 @@ public class AutomatonGame extends ApplicationAdapter {
             currentBackgroundColor.set(lightBackgroundColor);
         }
     }
+
+    private void setSimulationPaused(boolean paused) {
+        if (this.simulationPaused == paused) {
+            return;
+        }
+        this.simulationPaused = paused;
+        if (!paused) {
+            accumulator = 0f;
+            lowFpsDuration = 0f;
+        }
+        System.out.println("Simulation " + (paused ? "paused" : "resumed"));
+    }
+
+    private void monitorPerformance(float delta) {
+        timeSinceStart += delta;
+        if (timeSinceStart < PERFORMANCE_STARTUP_GRACE) {
+            return;
+        }
+
+        if (performanceDialogVisible) {
+            lowFpsDuration = 0f;
+            return;
+        }
+        if (simulationPaused) {
+            lowFpsDuration = 0f;
+            return;
+        }
+
+        if (delta <= 0f) {
+            return;
+        }
+
+        float instantaneousFps = 1f / delta;
+        if (instantaneousFps < PERFORMANCE_FPS_THRESHOLD) {
+            lowFpsDuration += delta;
+            if (lowFpsDuration >= LOW_FPS_GRACE_PERIOD) {
+                triggerPerformancePause(MathUtils.floor(instantaneousFps));
+            }
+        } else {
+            lowFpsDuration = 0f;
+        }
+    }
+
+    private void triggerPerformancePause(int fps) {
+        if (performanceDialogVisible) {
+            return;
+        }
+        performanceDialogVisible = true;
+        setSimulationPaused(true);
+
+        Dialog dialog = new Dialog("Performance Warning", skin) {
+            @Override
+            protected void result(Object object) {
+                handlePerformanceDialogResult(object);
+            }
+        };
+
+        String message = String.format(
+            "Frame rate dropped to %d FPS. The simulation has been paused. Restart the world or continue anyway?",
+            Math.max(fps, 0)
+        );
+        dialog.text(message).pad(10f);
+        dialog.button("Restart", PERFORMANCE_ACTION_RESTART);
+        dialog.button("Continue", PERFORMANCE_ACTION_CONTINUE);
+        dialog.getButtonTable().pad(10f).defaults().pad(5f).width(140f);
+        dialog.show(uiStage);
+        activePerformanceDialog = dialog;
+    }
+
+    private void handlePerformanceDialogResult(Object selection) {
+        dismissPerformanceDialog();
+        String action = selection instanceof String ? (String) selection : PERFORMANCE_ACTION_CONTINUE;
+        if (PERFORMANCE_ACTION_RESTART.equals(action)) {
+            restartSimulation();
+        } else {
+            setSimulationPaused(false);
+        }
+    }
+
+    private void dismissPerformanceDialog() {
+        if (activePerformanceDialog != null) {
+            activePerformanceDialog.hide();
+            activePerformanceDialog = null;
+        }
+        performanceDialogVisible = false;
+        lowFpsDuration = 0f;
+    }
     
     /**
      * Apply friction setting to all XOR gate particles.
@@ -825,6 +922,7 @@ public class AutomatonGame extends ApplicationAdapter {
      */
     private void restartSimulation() {
         System.out.println("Restarting simulation...");
+        dismissPerformanceDialog();
         
         // Clear all existing particles and bonds
         Array<Particle> particles = physicsWorld.getActiveParticles();
@@ -855,6 +953,8 @@ public class AutomatonGame extends ApplicationAdapter {
         spawnDemoMolecules();
         
         System.out.println("Simulation restarted with " + initialSpawnCount + " particles, world size: " + worldSizeMultiplier + "x");
+        timeSinceStart = 0f;
+        setSimulationPaused(false);
     }
 
     @Override
@@ -871,21 +971,24 @@ public class AutomatonGame extends ApplicationAdapter {
         }
         
         float delta = Gdx.graphics.getDeltaTime();
-        totalTime += delta; // Track total time for animations
+        monitorPerformance(delta);
         
         // Update camera for keyboard panning (arrow keys) and zoom (+/- keys)
         cameraController.update(delta);
-        
-        accumulator += delta;
-        while (accumulator >= TIME_STEP) {
-            physicsWorld.step(TIME_STEP, VELOCITY_ITERATIONS, POSITION_ITERATIONS);
-            
-            // Process reactions if enabled
-            if (enableReactions) {
-                reactionManager.processReactions();
+
+        if (!simulationPaused) {
+            totalTime += delta; // Track total time for animations when running
+            accumulator += delta;
+            while (accumulator >= TIME_STEP) {
+                physicsWorld.step(TIME_STEP, VELOCITY_ITERATIONS, POSITION_ITERATIONS);
+
+                // Process reactions if enabled
+                if (enableReactions) {
+                    reactionManager.processReactions();
+                }
+
+                accumulator -= TIME_STEP;
             }
-            
-            accumulator -= TIME_STEP;
         }
 
     Gdx.gl.glClearColor(currentBackgroundColor.r, currentBackgroundColor.g,
@@ -899,7 +1002,7 @@ public class AutomatonGame extends ApplicationAdapter {
         particleRenderer.render(physicsWorld.getActiveParticles(), camera, totalTime);
         
         // Render UI on top if visible
-        if (uiVisible) {
+        if (uiVisible || performanceDialogVisible) {
             uiStage.act(delta);
             uiStage.draw();
         }

@@ -113,6 +113,20 @@ public final class PhysicsWorld implements Disposable {
         }
     }
 
+    private static class ClosestBoundaryInfo {
+        Particle particleA;
+        Particle particleB;
+        final Vector2 closestPoint = new Vector2();
+        float distanceSq = Float.MAX_VALUE;
+
+        void reset() {
+            particleA = null;
+            particleB = null;
+            distanceSq = Float.MAX_VALUE;
+            closestPoint.setZero();
+        }
+    }
+
     private static class CellStructure {
         final int componentId;
         final Array<Vector2> vertices = new Array<>();
@@ -1153,20 +1167,21 @@ public final class PhysicsWorld implements Disposable {
         if (organelleEnergyRate <= 0f || cellsByComponent == null || cellsByComponent.size == 0) return;
         if (organelleCells == null || organelleCells.size == 0) return;
 
-        ObjectMap<CellStructure, Integer> organelleCountByCell = new ObjectMap<>();
+        ObjectMap<CellStructure, Array<Particle>> organellesByCell = new ObjectMap<>();
         for (ObjectMap.Entry<Particle, CellStructure> entry : organelleCells.entries()) {
             CellStructure cell = entry.value;
-            Integer count = organelleCountByCell.get(cell);
-            if (count == null) {
-                organelleCountByCell.put(cell, 1);
-            } else {
-                organelleCountByCell.put(cell, count + 1);
+            Array<Particle> list = organellesByCell.get(cell);
+            if (list == null) {
+                list = new Array<>();
+                organellesByCell.put(cell, list);
             }
+            list.add(entry.key);
         }
 
-        for (ObjectMap.Entry<CellStructure, Integer> entry : organelleCountByCell.entries()) {
+        for (ObjectMap.Entry<CellStructure, Array<Particle>> entry : organellesByCell.entries()) {
             CellStructure cell = entry.key;
-            int organelleCount = entry.value;
+            Array<Particle> cellOrganelles = entry.value;
+            int organelleCount = cellOrganelles.size;
             if (cell.memberParticles.size == 0 || organelleCount == 0) continue;
 
             float count = organelleCount;
@@ -1180,6 +1195,8 @@ public final class PhysicsWorld implements Disposable {
             }
 
             reinforceCellBoundaryBonds(cell, organelleCount, delta);
+            adjustCellBondStretch(cell, organelleCount, delta);
+            applyOrganelleInflationForces(cell, cellOrganelles, delta);
         }
     }
 
@@ -1210,6 +1227,102 @@ public final class PhysicsWorld implements Disposable {
             }
             bond.increaseBreakForceThreshold(breakForceGain);
             bond.rejuvenate(ageReduction);
+        }
+    }
+
+    private void adjustCellBondStretch(CellStructure cell, int organelleCount, float delta) {
+        if (cell == null || cell.boundaryParticles.size < 2) {
+            return;
+        }
+
+        final float STRETCH_PER_ORGANELLE = 0.04f;
+        final float MAX_STRETCH = 0.6f;
+        final float REST_ADJUST_RATE = 2.5f;
+        final float BREAK_STRETCH_RATIO = 0.6f;
+
+        float stretchMultiplier = 1f + Math.min(MAX_STRETCH, organelleCount * STRETCH_PER_ORGANELLE);
+
+        for (int i = 0; i < cell.boundaryParticles.size; i++) {
+            Particle a = cell.boundaryParticles.get(i);
+            Particle b = cell.boundaryParticles.get((i + 1) % cell.boundaryParticles.size);
+            Bond bond = findActiveBondBetween(a, b);
+            if (bond == null) {
+                continue;
+            }
+
+            float initialRest = bond.getInitialRestLength() > 0f ? bond.getInitialRestLength() : bond.getRestLength();
+            float targetRest = initialRest * stretchMultiplier;
+            float currentRest = bond.getRestLength();
+            float restDelta = targetRest - currentRest;
+            if (Math.abs(restDelta) > 0.0001f) {
+                float maxStep = initialRest * REST_ADJUST_RATE * delta;
+                restDelta = MathUtils.clamp(restDelta, -maxStep, maxStep);
+                bond.setRestLength(currentRest + restDelta);
+            }
+
+            float initialBreak = bond.getInitialBreakForceThreshold();
+            if (initialBreak <= 0f) {
+                continue;
+            }
+            float targetBreak = initialBreak * (1f + Math.min(MAX_STRETCH, organelleCount * STRETCH_PER_ORGANELLE * BREAK_STRETCH_RATIO));
+            float currentBreak = bond.getBreakForceThreshold();
+            float breakDelta = targetBreak - currentBreak;
+            if (Math.abs(breakDelta) > 0.01f) {
+                float maxBreakStep = initialBreak * 3f * delta;
+                breakDelta = MathUtils.clamp(breakDelta, -maxBreakStep, maxBreakStep);
+                bond.setBreakForceThreshold(currentBreak + breakDelta);
+            }
+        }
+    }
+
+    private void applyOrganelleInflationForces(CellStructure cell, Array<Particle> organelles, float delta) {
+        if (cell == null || organelles == null || organelles.size == 0) {
+            return;
+        }
+        if (cell.boundaryParticles.size < 2) {
+            return;
+        }
+
+        final float PUSH_FORCE = 180f;
+        final float MAX_EFFECT_DISTANCE = 3.2f;
+        ClosestBoundaryInfo boundaryInfo = new ClosestBoundaryInfo();
+
+        for (Particle organelle : organelles) {
+            if (organelle == null || !organelle.isActive()) {
+                continue;
+            }
+
+            Vector2 orgPos = organelle.getPosition();
+            boundaryInfo = findClosestBoundaryInfo(cell, orgPos, boundaryInfo);
+            if (boundaryInfo.distanceSq == Float.MAX_VALUE) {
+                continue;
+            }
+
+            float dist = (float) Math.sqrt(boundaryInfo.distanceSq);
+            if (dist > MAX_EFFECT_DISTANCE) {
+                continue;
+            }
+
+            Vector2 pushDir = new Vector2(boundaryInfo.closestPoint).sub(orgPos);
+            float len = pushDir.len();
+            if (len < 0.0001f) {
+                continue;
+            }
+            pushDir.scl(1f / len);
+
+            float falloff = 1f - MathUtils.clamp(dist / MAX_EFFECT_DISTANCE, 0f, 1f);
+            float forceMag = PUSH_FORCE * falloff * delta;
+            float fx = pushDir.x * forceMag;
+            float fy = pushDir.y * forceMag;
+
+            if (boundaryInfo.particleA != null) {
+                boundaryInfo.particleA.getBody().applyForceToCenter(fx * 0.5f, fy * 0.5f, true);
+            }
+            if (boundaryInfo.particleB != null) {
+                boundaryInfo.particleB.getBody().applyForceToCenter(fx * 0.5f, fy * 0.5f, true);
+            }
+
+            organelle.getBody().applyForceToCenter(-fx, -fy, true);
         }
     }
     
@@ -2436,9 +2549,9 @@ public final class PhysicsWorld implements Disposable {
         if (organelles == null || organelles.size == 0) return;
         if (organelleCells == null || organelleCells.size == 0) return;
 
-        Vector2 closestPoint = new Vector2();
         Vector2 centroid = new Vector2();
         Vector2 pullDirection = new Vector2();
+        ClosestBoundaryInfo boundaryInfo = new ClosestBoundaryInfo();
         for (Particle organelle : organelles) {
             CellStructure cell = organelleCells.get(organelle);
             if (cell == null) continue;
@@ -2446,36 +2559,22 @@ public final class PhysicsWorld implements Disposable {
             Vector2 orgPos = organelle.getPosition();
             boolean inside = cell.contains(orgPos);
 
-            Particle closestA = null;
-            Particle closestB = null;
-            float closestDist2 = Float.MAX_VALUE;
-
-            for (int i = 0; i < cell.boundaryParticles.size; i++) {
-                Particle a = cell.boundaryParticles.get(i);
-                Particle b = cell.boundaryParticles.get((i + 1) % cell.boundaryParticles.size);
-                Vector2 candidate = getClosestPointOnSegment(orgPos, a.getPosition(), b.getPosition());
-                float dx = orgPos.x - candidate.x;
-                float dy = orgPos.y - candidate.y;
-                float dist2 = dx * dx + dy * dy;
-                if (dist2 < closestDist2) {
-                    closestDist2 = dist2;
-                    closestPoint.set(candidate);
-                    closestA = a;
-                    closestB = b;
-                }
-            }
-
-            if (closestDist2 == Float.MAX_VALUE) {
+            boundaryInfo = findClosestBoundaryInfo(cell, orgPos, boundaryInfo);
+            if (boundaryInfo.distanceSq == Float.MAX_VALUE) {
                 continue;
             }
 
-            float dist = (float) Math.sqrt(closestDist2);
+            float dist = (float) Math.sqrt(boundaryInfo.distanceSq);
             boolean membraneIntact = false;
-            if (closestA != null && closestB != null) {
-                Bond boundaryBond = findActiveBondBetween(closestA, closestB);
+            if (boundaryInfo.particleA != null && boundaryInfo.particleB != null) {
+                Bond boundaryBond = findActiveBondBetween(boundaryInfo.particleA, boundaryInfo.particleB);
                 membraneIntact = boundaryBond != null;
                 if (membraneIntact && dist < MEMBRANE_COLLISION_DISTANCE && dist > 0.0001f) {
-                    enforceOrganelleMembraneCollision(organelle, closestA, closestB, closestPoint, inside);
+                    enforceOrganelleMembraneCollision(organelle,
+                        boundaryInfo.particleA,
+                        boundaryInfo.particleB,
+                        boundaryInfo.closestPoint,
+                        inside);
                 }
             }
 
@@ -2639,6 +2738,35 @@ public final class PhysicsWorld implements Disposable {
         t = Math.max(0f, Math.min(1f, t)); // Clamp to segment
         
         return new Vector2(segStart.x + t * dx, segStart.y + t * dy);
+    }
+
+    private ClosestBoundaryInfo findClosestBoundaryInfo(CellStructure cell, Vector2 position, ClosestBoundaryInfo result) {
+        if (result == null) {
+            result = new ClosestBoundaryInfo();
+        } else {
+            result.reset();
+        }
+
+        if (cell == null || position == null || cell.boundaryParticles.size < 2) {
+            return result;
+        }
+
+        for (int i = 0; i < cell.boundaryParticles.size; i++) {
+            Particle a = cell.boundaryParticles.get(i);
+            Particle b = cell.boundaryParticles.get((i + 1) % cell.boundaryParticles.size);
+            Vector2 candidate = getClosestPointOnSegment(position, a.getPosition(), b.getPosition());
+            float dx = position.x - candidate.x;
+            float dy = position.y - candidate.y;
+            float distSq = dx * dx + dy * dy;
+            if (distSq < result.distanceSq) {
+                result.distanceSq = distSq;
+                result.closestPoint.set(candidate);
+                result.particleA = a;
+                result.particleB = b;
+            }
+        }
+
+        return result;
     }
     
     /**

@@ -23,6 +23,8 @@ public final class Bond implements Pool.Poolable {
     private boolean active;
     private float currentForce;
     private float age; // Age in seconds since bond creation
+    private float initialRestLength;
+    private float initialBreakForceThreshold;
 
     private final Vector2 tmpVec = new Vector2();
     private final Vector2 tmpVel = new Vector2();
@@ -36,6 +38,8 @@ public final class Bond implements Pool.Poolable {
         this.stiffness = stiffness;
         this.damping = damping;
         this.breakForceThreshold = breakForceThreshold;
+        this.initialRestLength = restLength;
+        this.initialBreakForceThreshold = breakForceThreshold;
         this.active = true;
         this.currentForce = 0f;
         this.age = 0f; // Start at age 0
@@ -69,11 +73,27 @@ public final class Bond implements Pool.Poolable {
         return breakForceThreshold;
     }
 
+    public float getInitialRestLength() {
+        return initialRestLength;
+    }
+
+    public float getInitialBreakForceThreshold() {
+        return initialBreakForceThreshold;
+    }
+
     public void increaseBreakForceThreshold(float delta) {
         if (Math.abs(delta) < MathUtils.FLOAT_ROUNDING_ERROR) {
             return;
         }
         breakForceThreshold = MathUtils.clamp(breakForceThreshold + delta, MIN_BREAK_FORCE, MAX_BREAK_FORCE);
+    }
+
+    public void setBreakForceThreshold(float value) {
+        breakForceThreshold = MathUtils.clamp(value, MIN_BREAK_FORCE, MAX_BREAK_FORCE);
+    }
+
+    public void setRestLength(float value) {
+        restLength = Math.max(0.05f, value);
     }
     
     public float getAge() {
@@ -267,5 +287,7 @@ public final class Bond implements Pool.Poolable {
         active = false;
         currentForce = 0f;
         age = 0f;
+        initialRestLength = 0f;
+        initialBreakForceThreshold = 0f;
     }
 }

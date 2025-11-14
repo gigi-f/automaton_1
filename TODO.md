@@ -97,6 +97,8 @@ High-level tasks
 
 ## New Features (Added)
 
+[ ] Music system in key of a minor- notes are played when different bonds are created (major keys) or broken (minor keys)
+
 - [x] Add world configuration sliders
   - Add UI sliders for: a) initial spawn count (number of nodes), b) world size (dynamic boundary adjustment)
   - Boundaries should expand/contract based on world size slider
