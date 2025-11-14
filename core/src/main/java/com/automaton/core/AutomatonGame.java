@@ -73,6 +73,10 @@ public class AutomatonGame extends ApplicationAdapter {
     private float startingVelocityRange = 24f; // Initial velocity range for particles
     private boolean monochromeModeEnabled = false;
     private final Color monochromeColor = new Color(0.2f, 0.6f, 1f, 1f);
+    private boolean darkModeEnabled = true;
+    private final Color darkBackgroundColor = new Color(0f, 0f, 0f, 1f);
+    private final Color lightBackgroundColor = new Color(1f, 1f, 1f, 1f);
+    private final Color currentBackgroundColor = new Color(darkBackgroundColor);
     
     // World configuration
     private int initialSpawnCount = 33; // Total initial particles (singles + molecules)
@@ -95,6 +99,7 @@ public class AutomatonGame extends ApplicationAdapter {
         bondRenderer = new BondRenderer();
         movingEnergyFieldRenderer = new MovingEnergyFieldRenderer();
     updateMonochromeRenderers();
+    updateBackgroundColor();
         camera = new OrthographicCamera(WORLD_WIDTH, WORLD_HEIGHT);
         camera.position.set(0f, 0f, 0f);
         camera.update();
@@ -490,8 +495,7 @@ public class AutomatonGame extends ApplicationAdapter {
         monochromeCheckBox.addListener(new ChangeListener() {
             @Override
             public void changed(ChangeEvent event, Actor actor) {
-                monochromeModeEnabled = monochromeCheckBox.isChecked();
-                updateMonochromeRenderers();
+                setMonochromeModeEnabled(monochromeCheckBox.isChecked());
             }
         });
         monochromeCheckBox.addListener(createTooltip("When enabled, all particles and bonds render with the chosen color.", skin));
@@ -512,9 +516,25 @@ public class AutomatonGame extends ApplicationAdapter {
         monochromeRow.add(monochromeColorSwatch).size(28f, 28f).padLeft(12f).left();
         table.add(monochromeRow).left().padBottom(5).row();
 
+        
+
         Label monochromeHint = new Label("Color applies only when monochrome mode is enabled.", skin);
         monochromeHint.setWrap(true);
         table.add(monochromeHint).width(220f).left().row();
+
+        final CheckBox darkModeCheckbox = new CheckBox(" Dark Mode", skin);
+        darkModeCheckbox.setChecked(darkModeEnabled);
+        darkModeCheckbox.addListener(new ChangeListener() {
+            @Override
+            public void changed(ChangeEvent event, Actor actor) {
+                setDarkModeEnabled(darkModeCheckbox.isChecked());
+            }
+        });
+        darkModeCheckbox.addListener(createTooltip("Toggle between dark (black) and light (white) simulation backgrounds.", skin));
+        table.add(darkModeCheckbox).left().padBottom(5).row();
+        Label darkModeHint = new Label("Dark mode keeps the space black; turning it off switches to a white background.", skin);
+        darkModeHint.setWrap(true);
+        table.add(darkModeHint).width(220f).left().row();
         
         // Create scroll pane for the content
         ScrollPane scrollPane = new ScrollPane(contentTable, skin);
@@ -591,13 +611,21 @@ public class AutomatonGame extends ApplicationAdapter {
     textButtonStyle.fontColor = com.badlogic.gdx.graphics.Color.WHITE;
     skin.add("default", textButtonStyle);
 
-    // CheckBox style
-    CheckBox.CheckBoxStyle checkBoxStyle = new CheckBox.CheckBoxStyle();
-    checkBoxStyle.checkboxOff = whiteDrawable.tint(new com.badlogic.gdx.graphics.Color(0.3f, 0.3f, 0.3f, 1f));
-    checkBoxStyle.checkboxOn = whiteDrawable.tint(new com.badlogic.gdx.graphics.Color(0.1f, 0.6f, 0.2f, 1f));
-    checkBoxStyle.font = font;
-    checkBoxStyle.fontColor = com.badlogic.gdx.graphics.Color.WHITE;
-    skin.add("default", checkBoxStyle);
+        // CheckBox style
+        CheckBox.CheckBoxStyle checkBoxStyle = new CheckBox.CheckBoxStyle();
+        com.badlogic.gdx.scenes.scene2d.utils.Drawable checkboxOffDrawable =
+            whiteDrawable.tint(new com.badlogic.gdx.graphics.Color(0.3f, 0.3f, 0.3f, 1f));
+        checkboxOffDrawable.setMinWidth(18f);
+        checkboxOffDrawable.setMinHeight(18f);
+        com.badlogic.gdx.scenes.scene2d.utils.Drawable checkboxOnDrawable =
+            whiteDrawable.tint(new com.badlogic.gdx.graphics.Color(0.1f, 0.6f, 0.2f, 1f));
+        checkboxOnDrawable.setMinWidth(18f);
+        checkboxOnDrawable.setMinHeight(18f);
+        checkBoxStyle.checkboxOff = checkboxOffDrawable;
+        checkBoxStyle.checkboxOn = checkboxOnDrawable;
+        checkBoxStyle.font = font;
+        checkBoxStyle.fontColor = com.badlogic.gdx.graphics.Color.WHITE;
+        skin.add("default", checkBoxStyle);
 
     // Window/Dialog style
     com.badlogic.gdx.scenes.scene2d.ui.Window.WindowStyle windowStyle = new com.badlogic.gdx.scenes.scene2d.ui.Window.WindowStyle();
@@ -646,6 +674,15 @@ public class AutomatonGame extends ApplicationAdapter {
         if (bondRenderer != null) {
             bondRenderer.setMonochromeMode(monochromeModeEnabled, monochromeColor);
         }
+       
+    }
+
+    private void setMonochromeModeEnabled(boolean enabled) {
+        if (this.monochromeModeEnabled == enabled) {
+            return;
+        }
+        this.monochromeModeEnabled = enabled;
+        updateMonochromeRenderers();
     }
 
     private void showMonochromeColorPicker(final Image swatch) {
@@ -726,6 +763,22 @@ public class AutomatonGame extends ApplicationAdapter {
         int g = MathUtils.clamp(Math.round(color.g * 255f), 0, 255);
         int b = MathUtils.clamp(Math.round(color.b * 255f), 0, 255);
         return String.format("#%02X%02X%02X", r, g, b);
+    }
+
+    private void setDarkModeEnabled(boolean enabled) {
+        if (this.darkModeEnabled == enabled) {
+            return;
+        }
+        this.darkModeEnabled = enabled;
+        updateBackgroundColor();
+    }
+
+    private void updateBackgroundColor() {
+        if (darkModeEnabled) {
+            currentBackgroundColor.set(darkBackgroundColor);
+        } else {
+            currentBackgroundColor.set(lightBackgroundColor);
+        }
     }
     
     /**
@@ -808,7 +861,8 @@ public class AutomatonGame extends ApplicationAdapter {
             accumulator -= TIME_STEP;
         }
 
-        Gdx.gl.glClearColor(0f, 0f, 0f, 1f);
+    Gdx.gl.glClearColor(currentBackgroundColor.r, currentBackgroundColor.g,
+        currentBackgroundColor.b, currentBackgroundColor.a);
         Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT);
 
         // Render moving energy fields as background

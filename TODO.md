@@ -97,7 +97,7 @@ High-level tasks
 
 ## New Features (Added)
 
-- [ ] Add world configuration sliders
+- [x] Add world configuration sliders
   - Add UI sliders for: a) initial spawn count (number of nodes), b) world size (dynamic boundary adjustment)
   - Boundaries should expand/contract based on world size slider
   - Acceptance: can adjust spawn count and world size, restart updates boundaries
@@ -105,15 +105,18 @@ High-level tasks
 - [x] Monochrome rendering mode toggle
   - Add UI checkbox plus color picker to force all nodes and bonds to render in a single (default blue) color when desired.
   - Acceptance: Toggle and color picker appear together; changing either updates the simulation visuals immediately.
+- [x] Monochrome status + dark mode toggle
+  - Display a read-only checkbox showing whether monochrome mode is currently active and add a dark-mode toggle that swaps the background between black and white.
+  - Acceptance: Indicator mirrors the toggle, and disabling dark mode visibly flips the playfield to a white background.
 
-- [ ] Multi-type energy fields with environmental dynamics
+- [x] Multi-type energy fields with environmental dynamics
   - Multiple energy field types (color-coded: red, green, blue, etc.)
   - Each field type attracts/repels specific particle types differently
   - Fields should move across screen like waves (spawn from edge, move in random direction/speed)
   - Visual representation for each field type
   - Acceptance: multiple colored fields visible, moving, affecting different particles uniquely
 
-- [ ] Corpse system (dead particles remain consumable)
+- [x] Corpse system (dead particles remain consumable)
   - Dead particles (energy=0) remain in world as "corpses" 
   - Corpses cannot form new bonds but remain consumable by living particles
   - Visual indicator for dead particles (grayscale, reduced opacity, or distinct marker)
@@ -127,5 +130,3 @@ Notes and assumptions
 - **Collision optimization**: Collision filtering + smaller collision radius than visual radius.
 - Use seedable java.util.Random (or SplittableRandom) for reproducible stochastic behavior.
 
-Next steps
-- Implement the custom bond (spring constraint) system and integrate it with the physics world.
