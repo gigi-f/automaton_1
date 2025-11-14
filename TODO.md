@@ -69,6 +69,11 @@ High-level tasks
   - **Collision filtering**: Box2D collision groups to disable unnecessary collisions; collision radius < visual radius.
   - Pooling for Particle and Bond objects. Tune Box2D velocity/position iterations for performance.
   - Acceptance: documented and measurable improvements; smooth performance with thousands of nodes.
+  - [ ] Optimize `applyHuntingBehavior()` in `PhysicsWorld` (lines ~870-960). It currently recomputes molecule groupings each tick and, for every molecule, scans *all* bonds to measure average strength, resulting in O(M·B) work per frame. Cache per-component bond aggregates or maintain running stats.
+  - [x] Accelerate `applyFoodSuction()` in `PhysicsWorld` (lines ~960-1040). Switched to spatial-hash radius queries per molecule center so we only consider nearby food/corpses instead of scanning every particle.
+  - [x] Reduce cost of `detectAndBreakCrossingBonds()` (lines ~2050-2095). Bonds are now bucketed via the spatial hash cell size and compared only within/adjacent buckets, slashing the previous O(B²) scan.
+  - [x] Avoid full `rebuildUnionFind()` calls inside `processMitosis()` (line ~1355). Component rebuilding now runs only when bond/particle changes mark the structure dirty, eliminating the unconditional sweep every few seconds.
+  - [x] Rework mitosis splitting dynamics. Bonds intersecting the molecule's central plane now break together, their stored break-force energy is split between the daughter cells' remaining bonds, and equal/opposite pushes separate the two halves. Mitosis checks now run on a 1s cadence in small batches so the system stays responsive without tanking performance.
 
 - [ ] Example node/bond types and reactions
   - Implement at least 4 node types and 3 bond types with different behaviors (push, break, catalysis, stretchy).

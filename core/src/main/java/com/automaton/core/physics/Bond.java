@@ -1,5 +1,6 @@
 package com.automaton.core.physics;
 
+import com.badlogic.gdx.math.MathUtils;
 import com.badlogic.gdx.math.Vector2;
 import com.badlogic.gdx.utils.Pool;
 
@@ -10,6 +11,8 @@ import com.badlogic.gdx.utils.Pool;
  * when dealing with thousands of bonds.
  */
 public final class Bond implements Pool.Poolable {
+    private static final float MIN_BREAK_FORCE = 5f;
+    private static final float MAX_BREAK_FORCE = 2000f;
     private Particle particleA;
     private Particle particleB;
     private BondType bondType;
@@ -64,6 +67,13 @@ public final class Bond implements Pool.Poolable {
 
     public float getBreakForceThreshold() {
         return breakForceThreshold;
+    }
+
+    public void increaseBreakForceThreshold(float delta) {
+        if (Math.abs(delta) < MathUtils.FLOAT_ROUNDING_ERROR) {
+            return;
+        }
+        breakForceThreshold = MathUtils.clamp(breakForceThreshold + delta, MIN_BREAK_FORCE, MAX_BREAK_FORCE);
     }
     
     public float getAge() {

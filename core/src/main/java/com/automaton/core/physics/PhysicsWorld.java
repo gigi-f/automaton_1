@@ -9,6 +9,9 @@ import com.badlogic.gdx.physics.box2d.FixtureDef;
 import com.badlogic.gdx.physics.box2d.World;
 import com.badlogic.gdx.utils.Array;
 import com.badlogic.gdx.utils.Disposable;
+import com.badlogic.gdx.utils.IntFloatMap;
+import com.badlogic.gdx.utils.IntIntMap;
+import com.badlogic.gdx.utils.LongMap;
 
 /**
  * Wrapper around the Box2D {@link World} managing particle lifecycle, pooling and
@@ -21,6 +24,11 @@ public final class PhysicsWorld implements Disposable {
     private static final float DEFAULT_PARTICLE_DENSITY = 1f;
     private static final float DEFAULT_PARTICLE_FRICTION = 0.0f;  // Zero friction
     private static final float DEFAULT_PARTICLE_RESTITUTION = 1.0f;  // Perfectly elastic collisions
+    private static final int MAX_MITOSIS_DIVISIONS_PER_CHECK = 2;
+    private static final float MIN_MITOSIS_SPLIT_BAND = 0.75f;
+    private static final float MIN_MITOSIS_PUSH_FORCE = 400f;
+    private static final float MAX_MITOSIS_PUSH_FORCE = 2500f;
+    private static final float MITOSIS_PUSH_FORCE_SCALE = 6f;
 
     private final World world;
     private final ParticlePool particlePool;
@@ -48,11 +56,13 @@ public final class PhysicsWorld implements Disposable {
     private int mitosisThreshold;  // Maximum molecule size before division
     private float mitosisCheckInterval;
     private float mitosisCheckAccumulator;
+    private float mitosisFastCheckInterval;
     private float huntingRange;  // How far molecules look for food
     private float huntingForce;  // Force strength toward food
     private float suctionRange;  // How far molecules pull food
     private float suctionForce;  // Base suction force strength
     private float organelleEnergyRate;  // Energy generation per organelle per second
+    private boolean componentsNeedRebuild;
     
     // Mitosis event tracking
     private static class MitosisEvent {
@@ -64,6 +74,16 @@ public final class PhysicsWorld implements Disposable {
             this.particles = particles;
             this.lockTimeRemaining = lockDuration;
             this.flashTimeRemaining = flashDuration;
+        }
+    }
+
+    private static class BondBucket {
+        final int cellX;
+        final int cellY;
+        final Array<Bond> bonds = new Array<>();
+        BondBucket(int cellX, int cellY) {
+            this.cellX = cellX;
+            this.cellY = cellY;
         }
     }
     private final Array<MitosisEvent> activeMitosisEvents;
@@ -81,7 +101,8 @@ public final class PhysicsWorld implements Disposable {
         this.environmentalEnergyRate = 5f;  // Default: 5 energy/sec from field
         this.chemotaxisStrength = 50f;  // Default: 50 force units for chemotaxis
         this.mitosisThreshold = 25;  // Default: molecules with 25+ particles undergo division
-        this.mitosisCheckInterval = 3f;  // Default: check every 3 seconds
+    this.mitosisCheckInterval = 3f;  // Default: check every 3 seconds
+    this.mitosisFastCheckInterval = 1f;  // Fast-pass cadence to keep mitosis responsive
         this.mitosisCheckAccumulator = 0f;
         this.huntingRange = 15f;  // Default: look for food within 15 units
         this.huntingForce = 40f;  // Default: 40 force units toward food
@@ -110,6 +131,7 @@ public final class PhysicsWorld implements Disposable {
         this.cellInteriorDetector = new CellInteriorDetector();
         this.corpsesToRemove = new Array<>();
         this.activeMitosisEvents = new Array<>();
+        this.componentsNeedRebuild = false;
     }
     
     public BondProperties getBondProperties() {
@@ -277,6 +299,10 @@ public final class PhysicsWorld implements Disposable {
         return spatialGrid.queryNeighbors(particle, radius);
     }
 
+    public Array<Particle> queryRadius(float x, float y, float radius) {
+        return spatialGrid.queryRadius(x, y, radius);
+    }
+
     /**
      * Check if two particles are in the same connected component.
      */
@@ -339,6 +365,7 @@ public final class PhysicsWorld implements Disposable {
         particle.deactivate(world);
         activeParticles.removeValue(particle, true);
         particlePool.free(particle);
+        componentsNeedRebuild = true;
     }
 
     public Bond createBond(Particle a, Particle b, BondType type, float stiffness, 
@@ -407,6 +434,7 @@ public final class PhysicsWorld implements Disposable {
         bond.deactivate();
         activeBonds.removeValue(bond, true);
         bondPool.free(bond);
+        componentsNeedRebuild = true;
         
         // Note: Union-Find doesn't support efficient split operations.
         // For accurate component tracking after many bond breaks, call rebuildUnionFind()
@@ -898,10 +926,25 @@ public final class PhysicsWorld implements Disposable {
             }
             group.add(particle);
         }
+
+        // Precompute bond strength aggregates per component (avoids O(M * B) scans)
+        IntFloatMap componentBondForceSum = new IntFloatMap();
+        IntIntMap componentBondCounts = new IntIntMap();
+        for (Bond bond : activeBonds) {
+            if (!bond.isActive()) continue;
+            Particle a = bond.getParticleA();
+            Particle b = bond.getParticleB();
+            int componentA = a.getComponentId();
+            if (componentA != b.getComponentId()) continue; // Only consider intra-molecule bonds
+            float sum = componentBondForceSum.get(componentA, 0f) + bond.getEffectiveBreakForce();
+            componentBondForceSum.put(componentA, sum);
+            componentBondCounts.put(componentA, componentBondCounts.get(componentA, 0) + 1);
+        }
         
         // For each molecule, check if it needs to hunt
         for (com.badlogic.gdx.utils.IntMap.Entry<Array<Particle>> entry : moleculeGroups) {
             Array<Particle> molecule = entry.value;
+            int componentId = entry.key;
             
             if (molecule.size < 2) continue; // Solo particles don't hunt cooperatively
             
@@ -913,22 +956,9 @@ public final class PhysicsWorld implements Disposable {
             avgEnergy /= molecule.size;
             
             // Check average bond strength for this molecule
-            float avgBondStrength = 0f;
-            int bondCount = 0;
-            for (Bond bond : activeBonds) {
-                if (!bond.isActive()) continue;
-                
-                Particle a = bond.getParticleA();
-                Particle b = bond.getParticleB();
-                
-                if (molecule.contains(a, true) && molecule.contains(b, true)) {
-                    avgBondStrength += bond.getEffectiveBreakForce();
-                    bondCount++;
-                }
-            }
-            
+            int bondCount = componentBondCounts.get(componentId, 0);
             if (bondCount == 0) continue;
-            avgBondStrength /= bondCount;
+            float avgBondStrength = componentBondForceSum.get(componentId, 0f) / bondCount;
             
             // Determine if molecule is "hungry" (weak bonds or low energy)
             float normalizedStrength = avgBondStrength / 200f; // 200 is base break force
@@ -1034,7 +1064,8 @@ public final class PhysicsWorld implements Disposable {
             float sizeMultiplier = 1.0f + (float) Math.log(molecule.size) * 0.3f;
             
             // Find all food particles within suction range (both living energy-rich and corpses)
-            for (Particle food : activeParticles) {
+            Array<Particle> nearbyCandidates = queryRadius(cx, cy, suctionRange);
+            for (Particle food : nearbyCandidates) {
                 if (!food.isActive()) continue;
                 
                 // Pull in energy-rich particles (living food) and corpses (dead particles)
@@ -1398,11 +1429,20 @@ public final class PhysicsWorld implements Disposable {
         if (mitosisThreshold <= 0) return;
         
         mitosisCheckAccumulator += delta;
-        if (mitosisCheckAccumulator < mitosisCheckInterval) return;
-        mitosisCheckAccumulator = 0f;
+        float targetInterval = Math.min(mitosisCheckInterval, mitosisFastCheckInterval);
+        if (targetInterval <= 0f) {
+            targetInterval = 1f;
+        }
+        if (mitosisCheckAccumulator < targetInterval) return;
+        mitosisCheckAccumulator -= targetInterval;
+        if (mitosisCheckAccumulator < 0f) {
+            mitosisCheckAccumulator = 0f;
+        }
 
         // Ensure component IDs reflect current connectivity before grouping molecules
-        rebuildUnionFind();
+        if (componentsNeedRebuild) {
+            rebuildUnionFind();
+        }
         
         // Group particles by component ID to identify molecules
         com.badlogic.gdx.utils.IntMap<Array<Particle>> componentGroups = new com.badlogic.gdx.utils.IntMap<>();
@@ -1419,6 +1459,7 @@ public final class PhysicsWorld implements Disposable {
         }
         
         // Check each molecule for size threshold or metabolic stress
+        int divisionsThisFrame = 0;
         for (com.badlogic.gdx.utils.IntMap.Entry<Array<Particle>> entry : componentGroups) {
             Array<Particle> molecule = entry.value;
             
@@ -1438,6 +1479,10 @@ public final class PhysicsWorld implements Disposable {
             
             if (oversized || metabolicStress) {
                 divideMolecule(molecule);
+                divisionsThisFrame++;
+                if (divisionsThisFrame >= MAX_MITOSIS_DIVISIONS_PER_CHECK) {
+                    break;
+                }
             }
         }
     }
@@ -1447,157 +1492,319 @@ public final class PhysicsWorld implements Disposable {
      * Strategy: Find the bond whose removal would best split the molecule into two equal halves.
      */
     private void divideMolecule(Array<Particle> moleculeParticles) {
-        if (moleculeParticles.size < 3) return; // Too small to divide
-        
-        // Calculate center of mass
-        float cx = 0, cy = 0;
-        for (Particle p : moleculeParticles) {
-            Vector2 pos = p.getPosition();
-            cx += pos.x;
-            cy += pos.y;
+        if (moleculeParticles.size < 3) return;
+
+        Vector2 centerOfMass = calculateCenterOfMass(moleculeParticles);
+        float maxRadius = calculateMaxRadius(moleculeParticles, centerOfMass);
+
+        java.util.Set<Particle> moleculeSet = new java.util.HashSet<>(moleculeParticles.size);
+        for (Particle particle : moleculeParticles) {
+            moleculeSet.add(particle);
         }
-        cx /= moleculeParticles.size;
-        cy /= moleculeParticles.size;
-        
-        // Find all bonds within this molecule
-        Array<Bond> moleculeBonds = new Array<>();
-        for (Bond bond : activeBonds) {
+
+        Array<Bond> moleculeBonds = collectMoleculeBonds(moleculeSet);
+        if (moleculeBonds.size == 0) return;
+
+        Vector2 primaryAxis = findPrimaryAxis(moleculeParticles, centerOfMass);
+        float splittingBand = Math.max(MIN_MITOSIS_SPLIT_BAND, maxRadius * 0.2f);
+
+        Array<Bond> bondsToBreak = new Array<>();
+        for (Bond bond : moleculeBonds) {
             if (!bond.isActive()) continue;
-            Particle a = bond.getParticleA();
-            Particle b = bond.getParticleB();
-            if (moleculeParticles.contains(a, true) && moleculeParticles.contains(b, true)) {
-                moleculeBonds.add(bond);
+            if (crossesCenterBand(bond, centerOfMass, primaryAxis, splittingBand)) {
+                bondsToBreak.add(bond);
             }
         }
-        
-        if (moleculeBonds.size == 0) return;
-        
-        // Find bond closest to center of mass (breaking here splits molecule most evenly)
-        Bond divisionBond = null;
-        float minDistToCenter = Float.MAX_VALUE;
-        
-        for (Bond bond : moleculeBonds) {
+
+        if (bondsToBreak.size == 0) {
+            Bond fallback = findClosestBondToPoint(moleculeBonds, centerOfMass);
+            if (fallback != null) {
+                bondsToBreak.add(fallback);
+            }
+        }
+
+        if (bondsToBreak.size == 0) {
+            return;
+        }
+
+        float releasedBondEnergy = 0f;
+        for (Bond bond : bondsToBreak) {
+            releasedBondEnergy += bond.getBreakForceThreshold();
+            destroyBond(bond, false, true);
+        }
+
+        Array<Array<Particle>> daughterCells = extractMoleculeComponents(moleculeParticles, moleculeBonds, moleculeSet);
+        if (daughterCells.size < 2) {
+            return;
+        }
+
+        Array<Particle> daughterCell1 = null;
+        Array<Particle> daughterCell2 = null;
+        for (Array<Particle> cell : daughterCells) {
+            if (daughterCell1 == null || cell.size > daughterCell1.size) {
+                daughterCell2 = daughterCell1;
+                daughterCell1 = cell;
+            } else if (daughterCell2 == null || cell.size > daughterCell2.size) {
+                daughterCell2 = cell;
+            }
+        }
+
+        if (daughterCell1 == null || daughterCell2 == null) {
+            return;
+        }
+
+        for (Array<Particle> cell : daughterCells) {
+            if (cell == daughterCell1 || cell == daughterCell2) continue;
+            if (daughterCell1.size <= daughterCell2.size) {
+                daughterCell1.addAll(cell);
+            } else {
+                daughterCell2.addAll(cell);
+            }
+        }
+
+        float energyPerCell = releasedBondEnergy * 0.5f;
+        redistributeBondEnergy(daughterCell1, energyPerCell);
+        redistributeBondEnergy(daughterCell2, energyPerCell);
+
+        Vector2 center1 = calculateCenterOfMass(daughterCell1);
+        Vector2 center2 = calculateCenterOfMass(daughterCell2);
+        float pushForce = MathUtils.clamp(
+            releasedBondEnergy * MITOSIS_PUSH_FORCE_SCALE,
+            MIN_MITOSIS_PUSH_FORCE,
+            MAX_MITOSIS_PUSH_FORCE
+        );
+        applyEqualOpposingPush(center1, center2, daughterCell1, daughterCell2, pushForce, primaryAxis);
+
+        registerMitosisEvent(daughterCell1, daughterCell2);
+    }
+
+    private Array<Bond> collectMoleculeBonds(java.util.Set<Particle> moleculeSet) {
+        Array<Bond> bonds = new Array<>();
+        for (Bond bond : activeBonds) {
+            if (!bond.isActive()) continue;
+            if (moleculeSet.contains(bond.getParticleA()) && moleculeSet.contains(bond.getParticleB())) {
+                bonds.add(bond);
+            }
+        }
+        return bonds;
+    }
+
+    private Vector2 calculateCenterOfMass(Array<Particle> particles) {
+        Vector2 center = new Vector2();
+        if (particles.size == 0) {
+            return center;
+        }
+        for (Particle particle : particles) {
+            center.add(particle.getPosition());
+        }
+        center.scl(1f / particles.size);
+        return center;
+    }
+
+    private float calculateMaxRadius(Array<Particle> particles, Vector2 center) {
+        float maxRadius = 0f;
+        for (Particle particle : particles) {
+            Vector2 pos = particle.getPosition();
+            float dx = pos.x - center.x;
+            float dy = pos.y - center.y;
+            float dist = (float) Math.sqrt(dx * dx + dy * dy);
+            if (dist > maxRadius) {
+                maxRadius = dist;
+            }
+        }
+        return maxRadius;
+    }
+
+    private Vector2 findPrimaryAxis(Array<Particle> particles, Vector2 center) {
+        Vector2 axis = new Vector2(1f, 0f);
+        float maxDistSq = 0f;
+        for (Particle particle : particles) {
+            Vector2 pos = particle.getPosition();
+            float dx = pos.x - center.x;
+            float dy = pos.y - center.y;
+            float distSq = dx * dx + dy * dy;
+            if (distSq > maxDistSq) {
+                maxDistSq = distSq;
+                axis.set(dx, dy);
+            }
+        }
+        if (axis.isZero(0.0001f)) {
+            axis.set(1f, 0f);
+        } else {
+            axis.nor();
+        }
+        return axis;
+    }
+
+    private boolean crossesCenterBand(Bond bond, Vector2 center, Vector2 normal, float bandWidth) {
+        Vector2 posA = bond.getParticleA().getPosition();
+        Vector2 posB = bond.getParticleB().getPosition();
+        float relAx = posA.x - center.x;
+        float relAy = posA.y - center.y;
+        float relBx = posB.x - center.x;
+        float relBy = posB.y - center.y;
+        float projA = relAx * normal.x + relAy * normal.y;
+        float projB = relBx * normal.x + relBy * normal.y;
+        if (Math.abs(projA) < 0.0001f) projA = 0f;
+        if (Math.abs(projB) < 0.0001f) projB = 0f;
+
+        if ((projA > 0f && projB > 0f) || (projA < 0f && projB < 0f)) {
+            return false;
+        }
+
+        float midpointProjection = Math.abs((projA + projB) * 0.5f);
+        return midpointProjection <= bandWidth;
+    }
+
+    private Bond findClosestBondToPoint(Array<Bond> bonds, Vector2 point) {
+        Bond closest = null;
+        float minDist = Float.MAX_VALUE;
+        for (Bond bond : bonds) {
+            if (!bond.isActive()) continue;
             Vector2 posA = bond.getParticleA().getPosition();
             Vector2 posB = bond.getParticleB().getPosition();
             float midX = (posA.x + posB.x) * 0.5f;
             float midY = (posA.y + posB.y) * 0.5f;
-            float distToCenter = (float) Math.sqrt((midX - cx) * (midX - cx) + (midY - cy) * (midY - cy));
-            
-            if (distToCenter < minDistToCenter) {
-                minDistToCenter = distToCenter;
-                divisionBond = bond;
+            float dist = Vector2.dst(midX, midY, point.x, point.y);
+            if (dist < minDist) {
+                minDist = dist;
+                closest = bond;
             }
         }
-        
-        // Break the division bond (with some repulsive force)
-        if (divisionBond != null) {
-            // Store the particles BEFORE destroying the bond
-            Particle seedA = divisionBond.getParticleA();
-            Particle seedB = divisionBond.getParticleB();
-            
-            destroyBond(divisionBond, true, true); // Violent break to push halves apart
-            
-            // Use flood-fill to identify the two daughter cells
-            Array<Particle> daughterCell1 = new Array<>();
-            Array<Particle> daughterCell2 = new Array<>();
-            
-            // Use a set to track visited particles (don't modify componentId during flood-fill)
-            java.util.Set<Particle> visited = new java.util.HashSet<>();
-            
-            // Flood fill from seedA
-            Array<Particle> queue = new Array<>();
-            queue.add(seedA);
-            visited.add(seedA);
+        return closest;
+    }
+
+    private Array<Array<Particle>> extractMoleculeComponents(
+        Array<Particle> moleculeParticles,
+        Array<Bond> moleculeBonds,
+        java.util.Set<Particle> moleculeSet
+    ) {
+        Array<Array<Particle>> components = new Array<>();
+        java.util.Set<Particle> visited = new java.util.HashSet<>();
+        Array<Particle> queue = new Array<>();
+
+        for (Particle start : moleculeParticles) {
+            if (!moleculeSet.contains(start) || visited.contains(start)) continue;
+            queue.clear();
+            queue.add(start);
+            visited.add(start);
+
+            Array<Particle> component = new Array<>();
             while (queue.size > 0) {
                 Particle current = queue.pop();
-                daughterCell1.add(current);
-                
-                for (Bond bond : activeBonds) {
+                component.add(current);
+                for (Bond bond : moleculeBonds) {
                     if (!bond.isActive()) continue;
-                    Particle other = null;
-                    if (bond.getParticleA() == current) other = bond.getParticleB();
-                    else if (bond.getParticleB() == current) other = bond.getParticleA();
-                    
-                    if (other != null && moleculeParticles.contains(other, true) && !visited.contains(other)) {
-                        visited.add(other);
-                        queue.add(other);
+                    Particle neighbor = null;
+                    if (bond.getParticleA() == current) {
+                        neighbor = bond.getParticleB();
+                    } else if (bond.getParticleB() == current) {
+                        neighbor = bond.getParticleA();
+                    }
+
+                    if (neighbor != null && moleculeSet.contains(neighbor) && !visited.contains(neighbor)) {
+                        visited.add(neighbor);
+                        queue.add(neighbor);
                     }
                 }
             }
-            
-            // Remaining particles belong to daughterCell2
-            for (Particle p : moleculeParticles) {
-                if (!visited.contains(p)) {
-                    daughterCell2.add(p);
-                }
+
+            if (component.size > 0) {
+                components.add(component);
             }
-            
-            // Calculate center of mass for each daughter cell
-            float cx1 = 0, cy1 = 0;
-            for (Particle p : daughterCell1) {
-                Vector2 pos = p.getPosition();
-                cx1 += pos.x;
-                cy1 += pos.y;
-            }
-            if (daughterCell1.size > 0) {
-                cx1 /= daughterCell1.size;
-                cy1 /= daughterCell1.size;
-            }
-            
-            float cx2 = 0, cy2 = 0;
-            for (Particle p : daughterCell2) {
-                Vector2 pos = p.getPosition();
-                cx2 += pos.x;
-                cy2 += pos.y;
-            }
-            if (daughterCell2.size > 0) {
-                cx2 /= daughterCell2.size;
-                cy2 /= daughterCell2.size;
-            }
-            
-            // Apply strong repulsive push between daughter cells
-            float dx = cx2 - cx1;
-            float dy = cy2 - cy1;
-            float dist = (float) Math.sqrt(dx * dx + dy * dy);
-            if (dist > 0.001f) {
-                dx /= dist;
-                dy /= dist;
-                
-                float pushForce = 800f; // Strong mitosis push
-                
-                // Apply push to all particles in daughter cell 1 (away from cell 2)
-                for (Particle p : daughterCell1) {
-                    Body body = p.getBody();
-                    if (body != null) {
-                        body.applyForceToCenter(-dx * pushForce, -dy * pushForce, true);
-                    }
-                }
-                
-                // Apply push to all particles in daughter cell 2 (away from cell 1)
-                for (Particle p : daughterCell2) {
-                    Body body = p.getBody();
-                    if (body != null) {
-                        body.applyForceToCenter(dx * pushForce, dy * pushForce, true);
-                    }
-                }
-            }
-            
-            // Create mitosis event for both daughter cells
-            float lockDuration = 3.5f; // 3.5 seconds before can rebond
-            float flashDuration = 0.8f; // 0.8 seconds visual flash
-            
-            // Combine both daughter cells into one set
-            java.util.Set<Particle> mitosisParticles = new java.util.HashSet<>();
-            for (Particle p : daughterCell1) {
-                mitosisParticles.add(p);
-            }
-            for (Particle p : daughterCell2) {
-                mitosisParticles.add(p);
-            }
-            
-            // Register this mitosis event
-            activeMitosisEvents.add(new MitosisEvent(mitosisParticles, lockDuration, flashDuration));
         }
+
+        return components;
+    }
+
+    private void redistributeBondEnergy(Array<Particle> particles, float energyShare) {
+        if (particles.size == 0 || energyShare <= 0f) {
+            return;
+        }
+
+        java.util.Set<Particle> particleSet = new java.util.HashSet<>(particles.size);
+        for (Particle particle : particles) {
+            particleSet.add(particle);
+        }
+
+        Array<Bond> recipientBonds = new Array<>();
+        for (Bond bond : activeBonds) {
+            if (!bond.isActive()) continue;
+            if (particleSet.contains(bond.getParticleA()) && particleSet.contains(bond.getParticleB())) {
+                recipientBonds.add(bond);
+            }
+        }
+
+        if (recipientBonds.size == 0) {
+            float perParticleEnergy = energyShare / particles.size;
+            for (Particle particle : particles) {
+                particle.addEnergy(perParticleEnergy);
+            }
+            return;
+        }
+
+        float energyPerBond = energyShare / recipientBonds.size;
+        for (Bond bond : recipientBonds) {
+            bond.increaseBreakForceThreshold(energyPerBond);
+        }
+    }
+
+    private void applyEqualOpposingPush(
+        Vector2 center1,
+        Vector2 center2,
+        Array<Particle> cell1,
+        Array<Particle> cell2,
+        float forceMagnitude,
+        Vector2 fallbackDirection
+    ) {
+        if (cell1.size == 0 || cell2.size == 0) {
+            return;
+        }
+
+        Vector2 direction = new Vector2(center2).sub(center1);
+        if (direction.isZero(0.0001f)) {
+            if (fallbackDirection != null) {
+                direction.set(fallbackDirection);
+            } else {
+                direction.set(1f, 0f);
+            }
+        }
+
+        if (!direction.isZero(0.0001f)) {
+            direction.nor();
+        } else {
+            direction.set(1f, 0f);
+        }
+
+        float perParticleForce1 = forceMagnitude / cell1.size;
+        float perParticleForce2 = forceMagnitude / cell2.size;
+
+        for (Particle particle : cell1) {
+            Body body = particle.getBody();
+            if (body != null) {
+                body.applyForceToCenter(-direction.x * perParticleForce1, -direction.y * perParticleForce1, true);
+            }
+        }
+
+        for (Particle particle : cell2) {
+            Body body = particle.getBody();
+            if (body != null) {
+                body.applyForceToCenter(direction.x * perParticleForce2, direction.y * perParticleForce2, true);
+            }
+        }
+    }
+
+    private void registerMitosisEvent(Array<Particle> daughterCell1, Array<Particle> daughterCell2) {
+        float lockDuration = 3.5f;
+        float flashDuration = 0.8f;
+        java.util.Set<Particle> mitosisParticles = new java.util.HashSet<>();
+        for (Particle particle : daughterCell1) {
+            mitosisParticles.add(particle);
+        }
+        for (Particle particle : daughterCell2) {
+            mitosisParticles.add(particle);
+        }
+        activeMitosisEvents.add(new MitosisEvent(mitosisParticles, lockDuration, flashDuration));
     }
     
     /**
@@ -2117,31 +2324,55 @@ public final class PhysicsWorld implements Disposable {
      */
     private void detectAndBreakCrossingBonds() {
         Array<Bond> bondsToBreak = new Array<>();
-        
-        // Check all pairs of bonds
-        for (int i = 0; i < activeBonds.size; i++) {
-            Bond bondA = activeBonds.get(i);
-            if (!bondA.isActive()) continue;
-            
-            // Only check bonds within the same molecule (same component)
-            int componentA = bondA.getParticleA().getComponentId();
-            
-            for (int j = i + 1; j < activeBonds.size; j++) {
-                Bond bondB = activeBonds.get(j);
-                if (!bondB.isActive()) continue;
-                
-                // Check if in same molecule
-                int componentB = bondB.getParticleA().getComponentId();
-                if (componentA != componentB) continue;
-                
-                // Check if bonds intersect
-                if (bondA.intersects(bondB)) {
-                    bondsToBreak.add(bondA);
-                    bondsToBreak.add(bondB);
+
+        if (activeBonds.size == 0) return;
+
+        float cellSize = spatialGrid.getCellSize();
+        LongMap<BondBucket> bucketMap = new LongMap<>();
+        Array<BondBucket> bucketList = new Array<>();
+
+        // Bucket bonds by the cell containing their midpoint
+        for (Bond bond : activeBonds) {
+            if (!bond.isActive()) continue;
+            Particle a = bond.getParticleA();
+            Particle b = bond.getParticleB();
+            if (a.getComponentId() != b.getComponentId()) continue; // Skip inter-component bonds
+
+            Vector2 posA = a.getPosition();
+            Vector2 posB = b.getPosition();
+            float midX = (posA.x + posB.x) * 0.5f;
+            float midY = (posA.y + posB.y) * 0.5f;
+            int cellX = (int) Math.floor(midX / cellSize);
+            int cellY = (int) Math.floor(midY / cellSize);
+            long key = packCellKey(cellX, cellY);
+
+            BondBucket bucket = bucketMap.get(key);
+            if (bucket == null) {
+                bucket = new BondBucket(cellX, cellY);
+                bucketMap.put(key, bucket);
+                bucketList.add(bucket);
+            }
+            bucket.bonds.add(bond);
+        }
+
+        // Compare bonds within each bucket and neighboring buckets
+        for (BondBucket bucket : bucketList) {
+            checkBucketForCrossings(bucket, bucket, bondsToBreak, true);
+
+            for (int dx = -1; dx <= 1; dx++) {
+                for (int dy = -1; dy <= 1; dy++) {
+                    if (dx == 0 && dy == 0) continue;
+                    int neighborX = bucket.cellX + dx;
+                    int neighborY = bucket.cellY + dy;
+                    if (!shouldProcessBucketPair(bucket.cellX, bucket.cellY, neighborX, neighborY)) continue;
+                    long neighborKey = packCellKey(neighborX, neighborY);
+                    BondBucket neighbor = bucketMap.get(neighborKey);
+                    if (neighbor == null) continue;
+                    checkBucketForCrossings(bucket, neighbor, bondsToBreak, false);
                 }
             }
         }
-        
+
         // Break all crossing bonds (violent reactions applied automatically)
         for (Bond bond : bondsToBreak) {
             if (bond.isActive()) {
@@ -2150,6 +2381,54 @@ public final class PhysicsWorld implements Disposable {
         }
     }
     
+    private void checkBucketForCrossings(BondBucket bucketA, BondBucket bucketB, Array<Bond> bondsToBreak, boolean sameBucket) {
+        Array<Bond> bondsA = bucketA.bonds;
+        Array<Bond> bondsB = bucketB.bonds;
+        if (sameBucket) {
+            for (int i = 0; i < bondsA.size; i++) {
+                Bond bondA = bondsA.get(i);
+                if (!bondA.isActive()) continue;
+                for (int j = i + 1; j < bondsA.size; j++) {
+                    Bond bondB = bondsA.get(j);
+                    if (!bondB.isActive()) continue;
+                    if (!areBondsInSameComponent(bondA, bondB)) continue;
+                    if (bondA.intersects(bondB)) {
+                        bondsToBreak.add(bondA);
+                        bondsToBreak.add(bondB);
+                    }
+                }
+            }
+        } else {
+            for (int i = 0; i < bondsA.size; i++) {
+                Bond bondA = bondsA.get(i);
+                if (!bondA.isActive()) continue;
+                for (int j = 0; j < bondsB.size; j++) {
+                    Bond bondB = bondsB.get(j);
+                    if (!bondB.isActive()) continue;
+                    if (!areBondsInSameComponent(bondA, bondB)) continue;
+                    if (bondA.intersects(bondB)) {
+                        bondsToBreak.add(bondA);
+                        bondsToBreak.add(bondB);
+                    }
+                }
+            }
+        }
+    }
+
+    private boolean areBondsInSameComponent(Bond a, Bond b) {
+        return a.getParticleA().getComponentId() == b.getParticleA().getComponentId();
+    }
+
+    private boolean shouldProcessBucketPair(int cellAX, int cellAY, int cellBX, int cellBY) {
+        if (cellBX > cellAX) return true;
+        if (cellBX == cellAX && cellBY > cellAY) return true;
+        return false;
+    }
+
+    private long packCellKey(int cellX, int cellY) {
+        return (((long) cellX) << 32) ^ (cellY & 0xffffffffL);
+    }
+
     /**
      * Apply rotational shear forces to break peripheral bonds in fast-spinning molecules.
      * When angular velocity exceeds threshold, centrifugal forces tear molecules apart.
@@ -2270,6 +2549,7 @@ public final class PhysicsWorld implements Disposable {
                 particle.setComponentId(componentId);
             }
         }
+        componentsNeedRebuild = false;
     }
 
     @Override
