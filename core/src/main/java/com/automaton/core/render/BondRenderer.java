@@ -18,6 +18,8 @@ import com.badlogic.gdx.utils.Disposable;
 public final class BondRenderer implements Disposable {
     private final ShapeRenderer shapeRenderer;
     private final Color tmpColor;
+    private final Color monochromeColor = new Color(Color.BLUE);
+    private boolean monochromeModeEnabled;
     
     // Base break force value for normalization (200 is the default)
     private static final float BASE_BREAK_FORCE = 200f;
@@ -37,15 +39,26 @@ public final class BondRenderer implements Disposable {
             Vector2 posA = bond.getParticleA().getPosition();
             Vector2 posB = bond.getParticleB().getPosition();
             
-            // Calculate color based on EFFECTIVE break force (includes aging)
-            float breakForce = bond.getEffectiveBreakForce();
-            getColorForStrength(breakForce, tmpColor);
-            shapeRenderer.setColor(tmpColor);
+            if (monochromeModeEnabled) {
+                shapeRenderer.setColor(monochromeColor);
+            } else {
+                // Calculate color based on EFFECTIVE break force (includes aging)
+                float breakForce = bond.getEffectiveBreakForce();
+                getColorForStrength(breakForce, tmpColor);
+                shapeRenderer.setColor(tmpColor);
+            }
             
             shapeRenderer.line(posA.x, posA.y, posB.x, posB.y);
         }
         
         shapeRenderer.end();
+    }
+
+    public void setMonochromeMode(boolean enabled, Color color) {
+        this.monochromeModeEnabled = enabled;
+        if (color != null) {
+            this.monochromeColor.set(color);
+        }
     }
     
     /**

@@ -27,6 +27,8 @@ public final class ParticleRenderer implements Disposable {
     private final SpriteBatch batch;
     private final TextureRegion circleRegion;
     private final Color tmpColor = new Color();
+    private final Color monochromeColor = new Color(Color.BLUE);
+    private boolean monochromeModeEnabled;
     private PhysicsWorld physicsWorld; // For component size queries
 
     public ParticleRenderer() {
@@ -37,6 +39,13 @@ public final class ParticleRenderer implements Disposable {
 
     public void setPhysicsWorld(PhysicsWorld world) {
         this.physicsWorld = world;
+    }
+
+    public void setMonochromeMode(boolean enabled, Color color) {
+        this.monochromeModeEnabled = enabled;
+        if (color != null) {
+            this.monochromeColor.set(color);
+        }
     }
 
     public void render(Array<Particle> particles, OrthographicCamera camera) {
@@ -53,8 +62,9 @@ public final class ParticleRenderer implements Disposable {
             float drawX = pos.x - radius;
             float drawY = pos.y - radius;
             
-            // Check if particle is an organelle
-            if (particle.isOrganelle()) {
+            if (monochromeModeEnabled) {
+                renderMonochromeParticle(particle, radius, drawX, drawY, diameter, time);
+            } else if (particle.isOrganelle()) {
                 // Organelles: pulsing bright green glow
                 Color typeColor = particle.getType().getColor();
                 
@@ -120,6 +130,25 @@ public final class ParticleRenderer implements Disposable {
         }
         batch.setColor(Color.WHITE); // Reset
         batch.end();
+    }
+
+    private void renderMonochromeParticle(Particle particle, float radius, float drawX, float drawY,
+                                          float diameter, float time) {
+        float alpha = particle.isAlive() ? 1f : 0.6f;
+        tmpColor.set(monochromeColor.r, monochromeColor.g, monochromeColor.b, alpha);
+        batch.setColor(tmpColor);
+        batch.draw(circleRegion, drawX, drawY, diameter, diameter);
+
+        if (particle.isOrganelle()) {
+            float pulse = 1.0f + 0.3f * (0.5f + 0.5f * MathUtils.sin(time * 3f));
+            float glowRadius = radius * (1.2f + 0.2f * pulse);
+            float glowDiameter = glowRadius * 2f;
+            float glowX = particle.getPosition().x - glowRadius;
+            float glowY = particle.getPosition().y - glowRadius;
+            tmpColor.set(monochromeColor.r, monochromeColor.g, monochromeColor.b, 0.35f * pulse);
+            batch.setColor(tmpColor);
+            batch.draw(circleRegion, glowX, glowY, glowDiameter, glowDiameter);
+        }
     }
 
     /**

@@ -102,6 +102,10 @@ High-level tasks
   - Boundaries should expand/contract based on world size slider
   - Acceptance: can adjust spawn count and world size, restart updates boundaries
 
+- [x] Monochrome rendering mode toggle
+  - Add UI checkbox plus color picker to force all nodes and bonds to render in a single (default blue) color when desired.
+  - Acceptance: Toggle and color picker appear together; changing either updates the simulation visuals immediately.
+
 - [ ] Multi-type energy fields with environmental dynamics
   - Multiple energy field types (color-coded: red, green, blue, etc.)
   - Each field type attracts/repels specific particle types differently

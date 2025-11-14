@@ -13,19 +13,27 @@ import com.badlogic.gdx.ApplicationAdapter;
 import com.badlogic.gdx.Gdx;
 import com.badlogic.gdx.Input;
 import com.badlogic.gdx.InputMultiplexer;
+import com.badlogic.gdx.graphics.Color;
 import com.badlogic.gdx.graphics.GL20;
 import com.badlogic.gdx.graphics.OrthographicCamera;
 import com.badlogic.gdx.math.MathUtils;
 import com.badlogic.gdx.math.Vector2;
 import com.badlogic.gdx.scenes.scene2d.Actor;
+import com.badlogic.gdx.scenes.scene2d.InputEvent;
 import com.badlogic.gdx.scenes.scene2d.Stage;
+import com.badlogic.gdx.scenes.scene2d.Touchable;
+import com.badlogic.gdx.scenes.scene2d.ui.CheckBox;
+import com.badlogic.gdx.scenes.scene2d.ui.Dialog;
+import com.badlogic.gdx.scenes.scene2d.ui.Image;
 import com.badlogic.gdx.scenes.scene2d.ui.Label;
 import com.badlogic.gdx.scenes.scene2d.ui.ScrollPane;
 import com.badlogic.gdx.scenes.scene2d.ui.Skin;
 import com.badlogic.gdx.scenes.scene2d.ui.Slider;
 import com.badlogic.gdx.scenes.scene2d.ui.Table;
 import com.badlogic.gdx.scenes.scene2d.ui.TextTooltip;
+import com.badlogic.gdx.scenes.scene2d.ui.TextButton;
 import com.badlogic.gdx.scenes.scene2d.utils.ChangeListener;
+import com.badlogic.gdx.scenes.scene2d.utils.ClickListener;
 import com.badlogic.gdx.utils.Array;
 import com.badlogic.gdx.utils.viewport.ScreenViewport;
 import java.util.Random;
@@ -63,6 +71,8 @@ public class AutomatonGame extends ApplicationAdapter {
     private float yellowFriction = 0.0f;  // Friction for XOR gate particles (yellow colored)
     private boolean uiVisible = true;  // Toggle with 'H' key
     private float startingVelocityRange = 24f; // Initial velocity range for particles
+    private boolean monochromeModeEnabled = false;
+    private final Color monochromeColor = new Color(0.2f, 0.6f, 1f, 1f);
     
     // World configuration
     private int initialSpawnCount = 33; // Total initial particles (singles + molecules)
@@ -84,6 +94,7 @@ public class AutomatonGame extends ApplicationAdapter {
         particleRenderer.setPhysicsWorld(physicsWorld);
         bondRenderer = new BondRenderer();
         movingEnergyFieldRenderer = new MovingEnergyFieldRenderer();
+    updateMonochromeRenderers();
         camera = new OrthographicCamera(WORLD_WIDTH, WORLD_HEIGHT);
         camera.position.set(0f, 0f, 0f);
         camera.update();
@@ -467,6 +478,43 @@ public class AutomatonGame extends ApplicationAdapter {
         
         table.add(organelleEnergyLabel).padBottom(5).row();
         table.add(organelleEnergySlider).width(200).row();
+
+        // Rendering controls
+        table.add(new Label("", skin)).padTop(20).row();
+        Label visualsHeader = new Label("=== VISUALS ===", skin);
+        table.add(visualsHeader).padBottom(10).row();
+
+        Table monochromeRow = new Table();
+        final CheckBox monochromeCheckBox = new CheckBox(" Monochrome Mode", skin);
+        monochromeCheckBox.setChecked(monochromeModeEnabled);
+        monochromeCheckBox.addListener(new ChangeListener() {
+            @Override
+            public void changed(ChangeEvent event, Actor actor) {
+                monochromeModeEnabled = monochromeCheckBox.isChecked();
+                updateMonochromeRenderers();
+            }
+        });
+        monochromeCheckBox.addListener(createTooltip("When enabled, all particles and bonds render with the chosen color.", skin));
+
+        final Image monochromeColorSwatch = new Image(skin.newDrawable("white", Color.WHITE));
+        monochromeColorSwatch.setColor(monochromeColor);
+        monochromeColorSwatch.setSize(28f, 28f);
+        monochromeColorSwatch.setTouchable(Touchable.enabled);
+        monochromeColorSwatch.addListener(createTooltip("Click to choose the monochrome color (default blue).", skin));
+        monochromeColorSwatch.addListener(new ClickListener() {
+            @Override
+            public void clicked(InputEvent event, float x, float y) {
+                showMonochromeColorPicker(monochromeColorSwatch);
+            }
+        });
+
+        monochromeRow.add(monochromeCheckBox).left();
+        monochromeRow.add(monochromeColorSwatch).size(28f, 28f).padLeft(12f).left();
+        table.add(monochromeRow).left().padBottom(5).row();
+
+        Label monochromeHint = new Label("Color applies only when monochrome mode is enabled.", skin);
+        monochromeHint.setWrap(true);
+        table.add(monochromeHint).width(220f).left().row();
         
         // Create scroll pane for the content
         ScrollPane scrollPane = new ScrollPane(contentTable, skin);
@@ -533,6 +581,30 @@ public class AutomatonGame extends ApplicationAdapter {
         sliderStyle.knob.setMinHeight(20);
         
         skin.add("default-horizontal", sliderStyle);
+
+    // TextButton style
+    TextButton.TextButtonStyle textButtonStyle = new TextButton.TextButtonStyle();
+    textButtonStyle.up = whiteDrawable.tint(new com.badlogic.gdx.graphics.Color(0.25f, 0.25f, 0.25f, 1f));
+    textButtonStyle.down = whiteDrawable.tint(new com.badlogic.gdx.graphics.Color(0.2f, 0.2f, 0.2f, 1f));
+    textButtonStyle.checked = whiteDrawable.tint(new com.badlogic.gdx.graphics.Color(0.35f, 0.35f, 0.35f, 1f));
+    textButtonStyle.font = font;
+    textButtonStyle.fontColor = com.badlogic.gdx.graphics.Color.WHITE;
+    skin.add("default", textButtonStyle);
+
+    // CheckBox style
+    CheckBox.CheckBoxStyle checkBoxStyle = new CheckBox.CheckBoxStyle();
+    checkBoxStyle.checkboxOff = whiteDrawable.tint(new com.badlogic.gdx.graphics.Color(0.3f, 0.3f, 0.3f, 1f));
+    checkBoxStyle.checkboxOn = whiteDrawable.tint(new com.badlogic.gdx.graphics.Color(0.1f, 0.6f, 0.2f, 1f));
+    checkBoxStyle.font = font;
+    checkBoxStyle.fontColor = com.badlogic.gdx.graphics.Color.WHITE;
+    skin.add("default", checkBoxStyle);
+
+    // Window/Dialog style
+    com.badlogic.gdx.scenes.scene2d.ui.Window.WindowStyle windowStyle = new com.badlogic.gdx.scenes.scene2d.ui.Window.WindowStyle();
+    windowStyle.titleFont = font;
+    windowStyle.titleFontColor = com.badlogic.gdx.graphics.Color.WHITE;
+    windowStyle.background = whiteDrawable.tint(new com.badlogic.gdx.graphics.Color(0.1f, 0.1f, 0.1f, 0.95f));
+    skin.add("default", windowStyle);
         
         // ScrollPane style
         ScrollPane.ScrollPaneStyle scrollPaneStyle = new ScrollPane.ScrollPaneStyle();
@@ -565,6 +637,95 @@ public class AutomatonGame extends ApplicationAdapter {
         tooltip.getActor().setWrap(true);
         tooltip.setInstant(false);
         return tooltip;
+    }
+
+    private void updateMonochromeRenderers() {
+        if (particleRenderer != null) {
+            particleRenderer.setMonochromeMode(monochromeModeEnabled, monochromeColor);
+        }
+        if (bondRenderer != null) {
+            bondRenderer.setMonochromeMode(monochromeModeEnabled, monochromeColor);
+        }
+    }
+
+    private void showMonochromeColorPicker(final Image swatch) {
+        final Slider rSlider = new Slider(0f, 1f, 0.01f, false, skin);
+        final Slider gSlider = new Slider(0f, 1f, 0.01f, false, skin);
+        final Slider bSlider = new Slider(0f, 1f, 0.01f, false, skin);
+        final Color workingColor = new Color(monochromeColor);
+        rSlider.setValue(workingColor.r);
+        gSlider.setValue(workingColor.g);
+        bSlider.setValue(workingColor.b);
+
+        final Image preview = new Image(skin.newDrawable("white", Color.WHITE));
+        preview.setTouchable(Touchable.disabled);
+        preview.setColor(workingColor);
+        final Label hexLabel = new Label("Hex: " + formatColorHex(workingColor), skin);
+
+        ChangeListener sliderListener = new ChangeListener() {
+            @Override
+            public void changed(ChangeEvent event, Actor actor) {
+                workingColor.set(rSlider.getValue(), gSlider.getValue(), bSlider.getValue(), 1f);
+                preview.setColor(workingColor);
+                hexLabel.setText("Hex: " + formatColorHex(workingColor));
+            }
+        };
+        rSlider.addListener(sliderListener);
+        gSlider.addListener(sliderListener);
+        bSlider.addListener(sliderListener);
+
+        Dialog colorDialog = new Dialog("Pick Monochrome Color", skin) {
+            @Override
+            protected void result(Object object) {
+                boolean accepted = Boolean.TRUE.equals(object);
+                if (accepted) {
+                    monochromeColor.set(workingColor);
+                    updateMonochromeRenderers();
+                    swatch.setColor(monochromeColor);
+                }
+            }
+        };
+
+        Table content = colorDialog.getContentTable();
+        content.pad(12f);
+        content.defaults().padBottom(8f).left();
+
+        content.add(new Label("Preview", skin)).left();
+        content.row();
+        content.add(preview).size(100f, 40f);
+        content.row();
+        content.add(hexLabel).left();
+        content.row();
+
+        Table redRow = new Table();
+        redRow.add(new Label("Red", skin)).width(60f).left();
+        redRow.add(rSlider).width(200f).padLeft(10f);
+        content.add(redRow).growX();
+        content.row();
+
+        Table greenRow = new Table();
+        greenRow.add(new Label("Green", skin)).width(60f).left();
+        greenRow.add(gSlider).width(200f).padLeft(10f);
+        content.add(greenRow).growX();
+        content.row();
+
+        Table blueRow = new Table();
+        blueRow.add(new Label("Blue", skin)).width(60f).left();
+        blueRow.add(bSlider).width(200f).padLeft(10f);
+        content.add(blueRow).growX();
+        content.row();
+
+        colorDialog.button("Cancel", false);
+        colorDialog.button("Apply", true);
+        colorDialog.getButtonTable().pad(10f);
+        colorDialog.show(uiStage);
+    }
+
+    private String formatColorHex(Color color) {
+        int r = MathUtils.clamp(Math.round(color.r * 255f), 0, 255);
+        int g = MathUtils.clamp(Math.round(color.g * 255f), 0, 255);
+        int b = MathUtils.clamp(Math.round(color.b * 255f), 0, 255);
+        return String.format("#%02X%02X%02X", r, g, b);
     }
     
     /**
