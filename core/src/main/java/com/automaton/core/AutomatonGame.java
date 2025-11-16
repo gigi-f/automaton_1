@@ -514,6 +514,86 @@ public class AutomatonGame extends ApplicationAdapter {
         table.add(organelleEnergyLabel).padBottom(5).row();
         table.add(organelleEnergySlider).width(200).row();
 
+        // Anti-clumping controls
+        table.add(new Label("", skin)).padTop(20).row();
+        Label spacingHeader = new Label("=== ANTI-CLUMPING ===", skin);
+        table.add(spacingHeader).padBottom(10).row();
+
+        Label spacingStrengthLabel = new Label(String.format("Spacing Strength: %.0f", physicsWorld.getAngularSpacingStrength()), skin);
+        spacingStrengthLabel.addListener(createTooltip("Force pulling boundary neighbors apart when angles get too tight. Higher values open concave corners faster.", skin));
+        Slider spacingStrengthSlider = new Slider(0f, 150f, 5f, false, skin);
+        spacingStrengthSlider.setValue(physicsWorld.getAngularSpacingStrength());
+        spacingStrengthSlider.addListener(new ChangeListener() {
+            @Override
+            public void changed(ChangeEvent event, Actor actor) {
+                float strength = spacingStrengthSlider.getValue();
+                physicsWorld.setAngularSpacingStrength(strength);
+                spacingStrengthLabel.setText(String.format("Spacing Strength: %.0f", strength));
+            }
+        });
+        table.add(spacingStrengthLabel).padBottom(5).row();
+        table.add(spacingStrengthSlider).width(200).row();
+
+        Label spacingDampingLabel = new Label(String.format("Spacing Damping: %.2f", physicsWorld.getAngularSpacingDamping()), skin);
+        spacingDampingLabel.addListener(createTooltip("Velocity damping applied to angular spacing pushes. Increases stability when strength is high.", skin));
+        Slider spacingDampingSlider = new Slider(0f, 10f, 0.1f, false, skin);
+        spacingDampingSlider.setValue(physicsWorld.getAngularSpacingDamping());
+        spacingDampingSlider.addListener(new ChangeListener() {
+            @Override
+            public void changed(ChangeEvent event, Actor actor) {
+                float damping = spacingDampingSlider.getValue();
+                physicsWorld.setAngularSpacingDamping(damping);
+                spacingDampingLabel.setText(String.format("Spacing Damping: %.2f", damping));
+            }
+        });
+        table.add(spacingDampingLabel).padBottom(5).row();
+        table.add(spacingDampingSlider).width(200).row();
+
+        Label spacingTorqueLabel = new Label(String.format("Spacing Torque Limit: %.0f", physicsWorld.getAngularSpacingTorqueLimit()), skin);
+        spacingTorqueLabel.addListener(createTooltip("Caps the maximum push that angular spacing can exert across a boundary chord.", skin));
+        Slider spacingTorqueSlider = new Slider(0f, 2000f, 25f, false, skin);
+        spacingTorqueSlider.setValue(physicsWorld.getAngularSpacingTorqueLimit());
+        spacingTorqueSlider.addListener(new ChangeListener() {
+            @Override
+            public void changed(ChangeEvent event, Actor actor) {
+                float torque = spacingTorqueSlider.getValue();
+                physicsWorld.setAngularSpacingTorqueLimit(torque);
+                spacingTorqueLabel.setText(String.format("Spacing Torque Limit: %.0f", torque));
+            }
+        });
+        table.add(spacingTorqueLabel).padBottom(5).row();
+        table.add(spacingTorqueSlider).width(200).row();
+
+        Label areaTargetLabel = new Label(String.format("Area Target Scale: %.2fx", physicsWorld.getAreaTargetScale()), skin);
+        areaTargetLabel.addListener(createTooltip("Ideal radius multiplier derived from the average boundary radius. Raise it to give cells more breathing room.", skin));
+        Slider areaTargetSlider = new Slider(0.8f, 2.0f, 0.05f, false, skin);
+        areaTargetSlider.setValue(physicsWorld.getAreaTargetScale());
+        areaTargetSlider.addListener(new ChangeListener() {
+            @Override
+            public void changed(ChangeEvent event, Actor actor) {
+                float scale = areaTargetSlider.getValue();
+                physicsWorld.setAreaTargetScale(scale);
+                areaTargetLabel.setText(String.format("Area Target Scale: %.2fx", scale));
+            }
+        });
+        table.add(areaTargetLabel).padBottom(5).row();
+        table.add(areaTargetSlider).width(200).row();
+
+        Label areaPressureLabel = new Label(String.format("Area Pressure: %.0f", physicsWorld.getAreaPressureStrength()), skin);
+        areaPressureLabel.addListener(createTooltip("Spring-like force that inflates cells that shrink below the target radius.", skin));
+        Slider areaPressureSlider = new Slider(0f, 400f, 10f, false, skin);
+        areaPressureSlider.setValue(physicsWorld.getAreaPressureStrength());
+        areaPressureSlider.addListener(new ChangeListener() {
+            @Override
+            public void changed(ChangeEvent event, Actor actor) {
+                float strength = areaPressureSlider.getValue();
+                physicsWorld.setAreaPressureStrength(strength);
+                areaPressureLabel.setText(String.format("Area Pressure: %.0f", strength));
+            }
+        });
+        table.add(areaPressureLabel).padBottom(5).row();
+        table.add(areaPressureSlider).width(200).row();
+
         // Rendering controls
         table.add(new Label("", skin)).padTop(20).row();
         Label visualsHeader = new Label("=== VISUALS ===", skin);

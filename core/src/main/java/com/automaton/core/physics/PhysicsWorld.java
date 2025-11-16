@@ -43,13 +43,13 @@ public final class PhysicsWorld implements Disposable {
     private static final float ANCHOR_BREAK_FORCE = 5000f;
     private static final float ANCHOR_REST_SLACK = 1.08f;
     private static final float ANCHOR_REST_ADJUST_RATE = 6f;
-    private static final float ANGULAR_SPACING_STRENGTH = 40f;
-    private static final float ANGULAR_SPACING_DAMPING = 2.5f;
-    private static final float ANGULAR_SPACING_TORQUE_LIMIT = 600f;
+    private static final float DEFAULT_ANGULAR_SPACING_STRENGTH = 40f;
+    private static final float DEFAULT_ANGULAR_SPACING_DAMPING = 2.5f;
+    private static final float DEFAULT_ANGULAR_SPACING_TORQUE_LIMIT = 600f;
     private static final float BOUNDARY_TARGET_ANGLE_DEG = 130f;
     private static final float BOUNDARY_TARGET_COS = MathUtils.cosDeg(BOUNDARY_TARGET_ANGLE_DEG);
-    private static final float AREA_TARGET_SCALE = 1.15f;
-    private static final float AREA_PRESSURE_STRENGTH = 120f;
+    private static final float DEFAULT_AREA_TARGET_SCALE = 1.15f;
+    private static final float DEFAULT_AREA_PRESSURE_STRENGTH = 120f;
 
     private final World world;
     private final ParticlePool particlePool;
@@ -92,6 +92,11 @@ public final class PhysicsWorld implements Disposable {
     private float suctionForce;  // Base suction force strength
     private float organelleEnergyRate;  // Energy generation per organelle per second
     private float organelleReplicationInterval;
+    private float angularSpacingStrength;
+    private float angularSpacingDamping;
+    private float angularSpacingTorqueLimit;
+    private float areaTargetScale;
+    private float areaPressureStrength;
     private boolean componentsNeedRebuild;
     private final ObjectFloatMap<Particle> organelleReplicationTimers;
     private final Array<Particle> organelleBuffer;
@@ -286,7 +291,12 @@ public final class PhysicsWorld implements Disposable {
         this.suctionForce = 60f;  // Default: 60 force units for suction
     this.organelleEnergyRate = 8f;  // Default: 8 energy/sec per organelle
     this.organelleReplicationInterval = 30f; // Default: replicate every 30 seconds
-        this.world = new World(gravity, true);
+    this.angularSpacingStrength = DEFAULT_ANGULAR_SPACING_STRENGTH;
+    this.angularSpacingDamping = DEFAULT_ANGULAR_SPACING_DAMPING;
+    this.angularSpacingTorqueLimit = DEFAULT_ANGULAR_SPACING_TORQUE_LIMIT;
+    this.areaTargetScale = DEFAULT_AREA_TARGET_SCALE;
+    this.areaPressureStrength = DEFAULT_AREA_PRESSURE_STRENGTH;
+    this.world = new World(gravity, true);
         this.particlePool = new ParticlePool(initialParticleCapacity, Integer.MAX_VALUE);
         this.bondPool = new BondPool(initialParticleCapacity * 2, Integer.MAX_VALUE);
         
@@ -674,6 +684,46 @@ public final class PhysicsWorld implements Disposable {
 
     public float getOrganelleReplicationInterval() {
         return organelleReplicationInterval;
+    }
+
+    public void setAngularSpacingStrength(float strength) {
+        this.angularSpacingStrength = Math.max(0f, strength);
+    }
+
+    public float getAngularSpacingStrength() {
+        return angularSpacingStrength;
+    }
+
+    public void setAngularSpacingDamping(float damping) {
+        this.angularSpacingDamping = Math.max(0f, damping);
+    }
+
+    public float getAngularSpacingDamping() {
+        return angularSpacingDamping;
+    }
+
+    public void setAngularSpacingTorqueLimit(float torqueLimit) {
+        this.angularSpacingTorqueLimit = Math.max(0f, torqueLimit);
+    }
+
+    public float getAngularSpacingTorqueLimit() {
+        return angularSpacingTorqueLimit;
+    }
+
+    public void setAreaTargetScale(float scale) {
+        this.areaTargetScale = Math.max(0.1f, scale);
+    }
+
+    public float getAreaTargetScale() {
+        return areaTargetScale;
+    }
+
+    public void setAreaPressureStrength(float strength) {
+        this.areaPressureStrength = Math.max(0f, strength);
+    }
+
+    public float getAreaPressureStrength() {
+        return areaPressureStrength;
     }
     
     public Array<MovingEnergyField> getMovingFields() {
@@ -1435,11 +1485,11 @@ public final class PhysicsWorld implements Disposable {
                     }
                     dir.scl(1f / chordLength);
 
-                    float forceMag = ANGULAR_SPACING_STRENGTH * angleFactor;
+                    float forceMag = angularSpacingStrength * angleFactor;
                     relVel.set(next.getBody().getLinearVelocity()).sub(prev.getBody().getLinearVelocity());
-                    float damping = ANGULAR_SPACING_DAMPING * relVel.dot(dir);
+                    float damping = angularSpacingDamping * relVel.dot(dir);
                     float finalForce = Math.max(0f, forceMag - damping);
-                    finalForce = Math.min(finalForce, ANGULAR_SPACING_TORQUE_LIMIT);
+                    finalForce = Math.min(finalForce, angularSpacingTorqueLimit);
 
                     float forceX = dir.x * finalForce;
                     float forceY = dir.y * finalForce;
@@ -1490,7 +1540,7 @@ public final class PhysicsWorld implements Disposable {
                 if (avgRadius < 0.001f) {
                     continue;
                 }
-                float targetRadius = avgRadius * AREA_TARGET_SCALE;
+                float targetRadius = avgRadius * areaTargetScale;
 
                 for (Particle boundary : cell.boundaryParticles) {
                     if (!boundary.isActive() || !boundary.isAlive()) {
@@ -1505,7 +1555,7 @@ public final class PhysicsWorld implements Disposable {
                         continue;
                     }
                     float deficit = targetRadius - dist;
-                    float forceMag = AREA_PRESSURE_STRENGTH * (deficit / targetRadius);
+                    float forceMag = areaPressureStrength * (deficit / targetRadius);
                     direction.scl(forceMag / dist);
                     boundary.getBody().applyForceToCenter(direction.x, direction.y, true);
                 }
