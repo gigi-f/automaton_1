@@ -25,6 +25,7 @@ public final class Bond implements Pool.Poolable {
     private float age; // Age in seconds since bond creation
     private float initialRestLength;
     private float initialBreakForceThreshold;
+    private boolean unbreakable;
 
     private final Vector2 tmpVec = new Vector2();
     private final Vector2 tmpVel = new Vector2();
@@ -43,6 +44,7 @@ public final class Bond implements Pool.Poolable {
         this.active = true;
         this.currentForce = 0f;
         this.age = 0f; // Start at age 0
+        this.unbreakable = false;
     }
 
     public boolean isActive() {
@@ -79,6 +81,14 @@ public final class Bond implements Pool.Poolable {
 
     public float getInitialBreakForceThreshold() {
         return initialBreakForceThreshold;
+    }
+
+    public boolean isUnbreakable() {
+        return unbreakable;
+    }
+
+    public void setUnbreakable(boolean unbreakable) {
+        this.unbreakable = unbreakable;
     }
 
     public void increaseBreakForceThreshold(float delta) {
@@ -120,6 +130,9 @@ public final class Bond implements Pool.Poolable {
      * Organelles within range strengthen bonds exponentially.
      */
     public float getEffectiveBreakForce() {
+        if (unbreakable) {
+            return Float.MAX_VALUE;
+        }
         // Aging formula: strength = base * (1 - 0.5 * min(age/60, 1))
         // After 60 seconds, bond is at 50% original strength
         float agingFactor = 1.0f - (0.5f * Math.min(age / 60f, 1.0f));
@@ -289,5 +302,6 @@ public final class Bond implements Pool.Poolable {
         age = 0f;
         initialRestLength = 0f;
         initialBreakForceThreshold = 0f;
+        unbreakable = false;
     }
 }

@@ -6,5 +6,6 @@ package com.automaton.core.physics;
 public enum BondType {
     RIGID,
     ELASTIC,
-    WEAK
+    WEAK,
+    ANCHOR
 }

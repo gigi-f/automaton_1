@@ -16,6 +16,7 @@ import com.badlogic.gdx.utils.LongMap;
 import com.badlogic.gdx.utils.ObjectFloatMap;
 import com.badlogic.gdx.utils.ObjectMap;
 import com.badlogic.gdx.utils.ObjectSet;
+import java.util.Arrays;
 
 /**
  * Wrapper around the Box2D {@link World} managing particle lifecycle, pooling and
@@ -36,6 +37,19 @@ public final class PhysicsWorld implements Disposable {
     private static final float MAX_ORGANELLE_ENERGY_RATE = 50f;
     private static final float BOND_RESTORATION_RATE = 300f;
     private static final float BOND_REJUVENATION_RATE = 60f;
+    private static final int MAX_ANCHOR_CONNECTIONS = 3;
+    private static final float ANCHOR_STIFFNESS = 70f;
+    private static final float ANCHOR_DAMPING = 5f;
+    private static final float ANCHOR_BREAK_FORCE = 5000f;
+    private static final float ANCHOR_REST_SLACK = 1.08f;
+    private static final float ANCHOR_REST_ADJUST_RATE = 6f;
+    private static final float ANGULAR_SPACING_STRENGTH = 40f;
+    private static final float ANGULAR_SPACING_DAMPING = 2.5f;
+    private static final float ANGULAR_SPACING_TORQUE_LIMIT = 600f;
+    private static final float BOUNDARY_TARGET_ANGLE_DEG = 130f;
+    private static final float BOUNDARY_TARGET_COS = MathUtils.cosDeg(BOUNDARY_TARGET_ANGLE_DEG);
+    private static final float AREA_TARGET_SCALE = 1.15f;
+    private static final float AREA_PRESSURE_STRENGTH = 120f;
 
     private final World world;
     private final ParticlePool particlePool;
@@ -49,6 +63,14 @@ public final class PhysicsWorld implements Disposable {
     private final Array<MovingEnergyField> movingFields;
     private final CellInteriorDetector cellInteriorDetector;
     private final Array<Particle> corpsesToRemove;
+    private final ObjectMap<CellStructure, Array<Particle>> organellesByCellCache;
+    private final Array<Array<Particle>> organelleListPool;
+    private final Array<Bond> anchorBondBuffer;
+    private final Array<Particle> anchorBoundaryBuffer;
+    private final ObjectSet<Particle> anchorTargetSet;
+    private final float[] anchorDistanceScratch;
+    private final ObjectMap<Particle, Array<Particle>> spacingAdjacencyCache;
+    private final Array<Array<Particle>> spacingAdjacencyPool;
     private float reactionViolenceMultiplier;
     private float energyDecayRate;
     private float bondEnergyCost;
@@ -289,6 +311,14 @@ public final class PhysicsWorld implements Disposable {
         this.componentsNeedRebuild = false;
         this.organelleReplicationTimers = new ObjectFloatMap<>();
         this.organelleBuffer = new Array<>();
+        this.organellesByCellCache = new ObjectMap<>();
+        this.organelleListPool = new Array<>();
+        this.anchorBondBuffer = new Array<>();
+        this.anchorBoundaryBuffer = new Array<>(MAX_ANCHOR_CONNECTIONS);
+        this.anchorTargetSet = new ObjectSet<>();
+        this.anchorDistanceScratch = new float[MAX_ANCHOR_CONNECTIONS];
+        this.spacingAdjacencyCache = new ObjectMap<>();
+        this.spacingAdjacencyPool = new Array<>();
     }
 
     private IntMap<Array<CellStructure>> detectCellsByComponent() {
@@ -325,6 +355,36 @@ public final class PhysicsWorld implements Disposable {
             }
         }
         return organelleBuffer;
+    }
+
+    private ObjectMap<CellStructure, Array<Particle>> buildOrganellesByCellMap(
+            ObjectMap<Particle, CellStructure> organelleCells) {
+        // Return pooled arrays to the scratch pool for reuse
+        for (ObjectMap.Entry<CellStructure, Array<Particle>> entry : organellesByCellCache.entries()) {
+            entry.value.clear();
+            organelleListPool.add(entry.value);
+        }
+        organellesByCellCache.clear();
+
+        if (organelleCells == null || organelleCells.size == 0) {
+            return organellesByCellCache;
+        }
+
+        for (ObjectMap.Entry<Particle, CellStructure> entry : organelleCells.entries()) {
+            CellStructure cell = entry.value;
+            if (cell == null) {
+                continue;
+            }
+            Array<Particle> list = organellesByCellCache.get(cell);
+            if (list == null) {
+                list = organelleListPool.size > 0 ? organelleListPool.pop() : new Array<>();
+                list.clear();
+                organellesByCellCache.put(cell, list);
+            }
+            list.add(entry.key);
+        }
+
+        return organellesByCellCache;
     }
 
     private Array<CellStructure> buildCellsForMolecule(Array<Particle> moleculeParticles, int componentId) {
@@ -794,7 +854,7 @@ public final class PhysicsWorld implements Disposable {
         }
         
         // Apply violent reaction before deactivating
-        if (applyViolentReaction) {
+        if (applyViolentReaction && bond.getBondType() != BondType.ANCHOR) {
             applyBondBreakReaction(bond);
         }
         
@@ -898,6 +958,8 @@ public final class PhysicsWorld implements Disposable {
     Array<Particle> organelles = collectActiveOrganelles();
     ObjectMap<Particle, CellStructure> organelleCells =
         (organelles.size == 0) ? null : mapOrganellesToCells(organelles, cellsByComponent);
+    ObjectMap<CellStructure, Array<Particle>> organellesByCell =
+        buildOrganellesByCellMap(organelleCells);
 
     // Process organelle containment, boundary pushing, and inter-organelle bonding
     processOrganelleContainment(cellsByComponent, organelles, organelleCells);
@@ -909,7 +971,10 @@ public final class PhysicsWorld implements Disposable {
     processOrganelleReplication(delta, cellsByComponent, organelles, organelleCells);
 
     // Apply organelle energy generation per detected cell
-    applyOrganelleEnergyGeneration(delta, cellsByComponent, organelleCells);
+    applyOrganelleEnergyGeneration(delta, cellsByComponent, organelleCells, organellesByCell);
+    maintainOrganelleAnchorBonds(delta, cellsByComponent, organelleCells, organellesByCell);
+    applyBoundaryAngularSpacing(cellsByComponent);
+    applyCellAreaPressure(cellsByComponent);
         
         // Check for crossing bonds within same molecule and break them
         detectAndBreakCrossingBonds();
@@ -949,6 +1014,7 @@ public final class PhysicsWorld implements Disposable {
             Array<Bond> productiveBonds = new Array<>();
             for (Bond bond : activeBonds) {
                 if (!bond.isActive()) continue;
+                if (bond.getBondType() == BondType.ANCHOR) continue;
                 if (isProductiveBond(bond)) {
                     productiveBonds.add(bond);
                 }
@@ -1098,6 +1164,7 @@ public final class PhysicsWorld implements Disposable {
         int[] bondCount = new int[activeParticles.size];
         for (Bond bond : activeBonds) {
             if (!bond.isActive()) continue;
+            if (bond.getBondType() == BondType.ANCHOR) continue;
             
             for (int i = 0; i < activeParticles.size; i++) {
                 Particle p = activeParticles.get(i);
@@ -1163,20 +1230,11 @@ public final class PhysicsWorld implements Disposable {
      */
     private void applyOrganelleEnergyGeneration(float delta,
                                                 IntMap<Array<CellStructure>> cellsByComponent,
-                                                ObjectMap<Particle, CellStructure> organelleCells) {
+                                                ObjectMap<Particle, CellStructure> organelleCells,
+                                                ObjectMap<CellStructure, Array<Particle>> organellesByCell) {
         if (organelleEnergyRate <= 0f || cellsByComponent == null || cellsByComponent.size == 0) return;
         if (organelleCells == null || organelleCells.size == 0) return;
-
-        ObjectMap<CellStructure, Array<Particle>> organellesByCell = new ObjectMap<>();
-        for (ObjectMap.Entry<Particle, CellStructure> entry : organelleCells.entries()) {
-            CellStructure cell = entry.value;
-            Array<Particle> list = organellesByCell.get(cell);
-            if (list == null) {
-                list = new Array<>();
-                organellesByCell.put(cell, list);
-            }
-            list.add(entry.key);
-        }
+        if (organellesByCell == null || organellesByCell.size == 0) return;
 
         for (ObjectMap.Entry<CellStructure, Array<Particle>> entry : organellesByCell.entries()) {
             CellStructure cell = entry.key;
@@ -1324,6 +1382,336 @@ public final class PhysicsWorld implements Disposable {
 
             organelle.getBody().applyForceToCenter(-fx, -fy, true);
         }
+    }
+
+    private void applyBoundaryAngularSpacing(IntMap<Array<CellStructure>> cellsByComponent) {
+        if (cellsByComponent == null || cellsByComponent.size == 0) {
+            return;
+        }
+
+    Vector2 prevPos = new Vector2();
+    Vector2 nextPos = new Vector2();
+    Vector2 dir = new Vector2();
+    Vector2 relVel = new Vector2();
+    Vector2 centroid = new Vector2();
+    Vector2 centerPush = new Vector2();
+
+        for (IntMap.Entry<Array<CellStructure>> entry : cellsByComponent) {
+            for (CellStructure cell : entry.value) {
+                int boundaryCount = cell.boundaryParticles.size;
+                if (boundaryCount < 3) {
+                    continue;
+                }
+                cell.getCentroid(centroid);
+
+                for (int i = 0; i < boundaryCount; i++) {
+                    Particle curr = cell.boundaryParticles.get(i);
+                    Particle prev = cell.boundaryParticles.get((i - 1 + boundaryCount) % boundaryCount);
+                    Particle next = cell.boundaryParticles.get((i + 1) % boundaryCount);
+                    if (!curr.isActive() || !curr.isAlive() || !prev.isActive() || !next.isActive()) {
+                        continue;
+                    }
+
+                    prevPos.set(prev.getPosition()).sub(curr.getPosition());
+                    nextPos.set(next.getPosition()).sub(curr.getPosition());
+                    float lenPrev = prevPos.len();
+                    float lenNext = nextPos.len();
+                    if (lenPrev < 0.15f || lenNext < 0.15f) {
+                        continue;
+                    }
+                    prevPos.scl(1f / lenPrev);
+                    nextPos.scl(1f / lenNext);
+
+                    float cosAngle = prevPos.dot(nextPos);
+                    if (cosAngle <= BOUNDARY_TARGET_COS) {
+                        continue; // already wide enough
+                    }
+
+                    float angleFactor = MathUtils.clamp((cosAngle - BOUNDARY_TARGET_COS) / (1f - BOUNDARY_TARGET_COS), 0f, 1f);
+                    dir.set(next.getPosition()).sub(prev.getPosition());
+                    float chordLength = dir.len();
+                    if (chordLength < 0.25f) {
+                        continue;
+                    }
+                    dir.scl(1f / chordLength);
+
+                    float forceMag = ANGULAR_SPACING_STRENGTH * angleFactor;
+                    relVel.set(next.getBody().getLinearVelocity()).sub(prev.getBody().getLinearVelocity());
+                    float damping = ANGULAR_SPACING_DAMPING * relVel.dot(dir);
+                    float finalForce = Math.max(0f, forceMag - damping);
+                    finalForce = Math.min(finalForce, ANGULAR_SPACING_TORQUE_LIMIT);
+
+                    float forceX = dir.x * finalForce;
+                    float forceY = dir.y * finalForce;
+                    prev.getBody().applyForceToCenter(-forceX, -forceY, true);
+                    next.getBody().applyForceToCenter(forceX, forceY, true);
+
+                    centerPush.set(curr.getPosition()).sub(centroid);
+                    float centerLen = centerPush.len();
+                    if (centerLen > 0.0001f) {
+                        centerPush.scl(1f / centerLen);
+                        curr.getBody().applyForceToCenter(centerPush.x * finalForce * 0.5f, centerPush.y * finalForce * 0.5f, true);
+                    }
+                }
+            }
+        }
+    }
+
+    private void applyCellAreaPressure(IntMap<Array<CellStructure>> cellsByComponent) {
+        if (cellsByComponent == null || cellsByComponent.size == 0) {
+            return;
+        }
+
+        Vector2 centroid = new Vector2();
+        Vector2 direction = new Vector2();
+
+        for (IntMap.Entry<Array<CellStructure>> entry : cellsByComponent) {
+            for (CellStructure cell : entry.value) {
+                int boundaryCount = cell.boundaryParticles.size;
+                if (boundaryCount < 3) {
+                    continue;
+                }
+
+                cell.getCentroid(centroid);
+                float totalRadius = 0f;
+                int activeCount = 0;
+                for (Particle boundary : cell.boundaryParticles) {
+                    if (!boundary.isActive() || !boundary.isAlive()) {
+                        continue;
+                    }
+                    totalRadius += centroid.dst(boundary.getPosition());
+                    activeCount++;
+                }
+                if (activeCount == 0) {
+                    continue;
+                }
+
+                float avgRadius = totalRadius / activeCount;
+                if (avgRadius < 0.001f) {
+                    continue;
+                }
+                float targetRadius = avgRadius * AREA_TARGET_SCALE;
+
+                for (Particle boundary : cell.boundaryParticles) {
+                    if (!boundary.isActive() || !boundary.isAlive()) {
+                        continue;
+                    }
+                    direction.set(boundary.getPosition()).sub(centroid);
+                    float dist = direction.len();
+                    if (dist < 0.0001f) {
+                        continue;
+                    }
+                    if (dist >= targetRadius) {
+                        continue;
+                    }
+                    float deficit = targetRadius - dist;
+                    float forceMag = AREA_PRESSURE_STRENGTH * (deficit / targetRadius);
+                    direction.scl(forceMag / dist);
+                    boundary.getBody().applyForceToCenter(direction.x, direction.y, true);
+                }
+            }
+        }
+    }
+
+    private void maintainOrganelleAnchorBonds(float delta,
+                                              IntMap<Array<CellStructure>> cellsByComponent,
+                                              ObjectMap<Particle, CellStructure> organelleCells,
+                                              ObjectMap<CellStructure, Array<Particle>> organellesByCell) {
+        if (cellsByComponent == null || cellsByComponent.size == 0) {
+            removeAllAnchorBonds();
+            return;
+        }
+        if (organelleCells == null || organelleCells.size == 0 || organellesByCell == null || organellesByCell.size == 0) {
+            removeAllAnchorBonds();
+            return;
+        }
+
+        for (ObjectMap.Entry<CellStructure, Array<Particle>> entry : organellesByCell.entries()) {
+            CellStructure cell = entry.key;
+            Array<Particle> cellOrganelles = entry.value;
+            if (cell == null || cellOrganelles == null || cellOrganelles.size == 0) {
+                continue;
+            }
+            maintainAnchorsForCell(cell, cellOrganelles, delta);
+        }
+    }
+
+    private void maintainAnchorsForCell(CellStructure cell, Array<Particle> organelles, float delta) {
+        if (cell.boundaryParticles.size < 3) {
+            for (Particle organelle : organelles) {
+                removeAllAnchorBonds(organelle);
+            }
+            return;
+        }
+
+        for (Particle organelle : organelles) {
+            if (organelle == null || !organelle.isActive()) {
+                removeAllAnchorBonds(organelle);
+                continue;
+            }
+            selectClosestBoundaryParticles(cell, organelle, anchorBoundaryBuffer);
+            ensureAnchorsForOrganelle(organelle, anchorBoundaryBuffer, delta);
+        }
+    }
+
+    private void selectClosestBoundaryParticles(CellStructure cell, Particle organelle, Array<Particle> out) {
+        out.clear();
+        Arrays.fill(anchorDistanceScratch, Float.MAX_VALUE);
+        if (cell == null || organelle == null) {
+            return;
+        }
+
+        Vector2 orgPos = organelle.getPosition();
+        for (Particle boundary : cell.boundaryParticles) {
+            if (boundary == null || !boundary.isActive() || !boundary.isAlive()) {
+                continue;
+            }
+            Vector2 boundaryPos = boundary.getPosition();
+            float dx = boundaryPos.x - orgPos.x;
+            float dy = boundaryPos.y - orgPos.y;
+            float distSq = dx * dx + dy * dy;
+
+            if (out.size < MAX_ANCHOR_CONNECTIONS) {
+                out.add(boundary);
+                anchorDistanceScratch[out.size - 1] = distSq;
+            } else {
+                int replaceIndex = 0;
+                float farthestDist = anchorDistanceScratch[0];
+                for (int i = 1; i < MAX_ANCHOR_CONNECTIONS; i++) {
+                    if (anchorDistanceScratch[i] > farthestDist) {
+                        farthestDist = anchorDistanceScratch[i];
+                        replaceIndex = i;
+                    }
+                }
+                if (distSq < farthestDist) {
+                    out.set(replaceIndex, boundary);
+                    anchorDistanceScratch[replaceIndex] = distSq;
+                }
+            }
+        }
+    }
+
+    private void ensureAnchorsForOrganelle(Particle organelle, Array<Particle> targetBoundaries, float delta) {
+        collectAnchorBondsForOrganelle(organelle, anchorBondBuffer);
+        anchorTargetSet.clear();
+        if (targetBoundaries != null) {
+            for (Particle boundary : targetBoundaries) {
+                if (boundary != null) {
+                    anchorTargetSet.add(boundary);
+                }
+            }
+        }
+
+        if (targetBoundaries != null) {
+            for (Particle boundary : targetBoundaries) {
+                if (boundary == null || !boundary.isActive() || !boundary.isAlive()) {
+                    continue;
+                }
+                Bond anchor = findAnchorBondInBuffer(organelle, boundary, anchorBondBuffer);
+                if (anchor == null) {
+                    createOrganelleAnchorBond(organelle, boundary);
+                } else {
+                    retuneAnchorBond(anchor, delta);
+                }
+            }
+        }
+
+        for (Bond anchor : anchorBondBuffer) {
+            Particle boundary = anchor.getParticleA() == organelle ? anchor.getParticleB() : anchor.getParticleA();
+            if (boundary == null || !boundary.isActive() || !boundary.isAlive()) {
+                destroyBond(anchor, false, true);
+                continue;
+            }
+            if (anchorTargetSet.size == 0 || !anchorTargetSet.contains(boundary)) {
+                destroyBond(anchor, false, true);
+            }
+        }
+    }
+
+    private void collectAnchorBondsForOrganelle(Particle organelle, Array<Bond> out) {
+        out.clear();
+        if (organelle == null) {
+            return;
+        }
+        for (Bond bond : activeBonds) {
+            if (!bond.isActive() || bond.getBondType() != BondType.ANCHOR) {
+                continue;
+            }
+            if (bond.getParticleA() == organelle || bond.getParticleB() == organelle) {
+                out.add(bond);
+            }
+        }
+    }
+
+    private void removeAllAnchorBonds(Particle organelle) {
+        if (organelle == null) {
+            return;
+        }
+        collectAnchorBondsForOrganelle(organelle, anchorBondBuffer);
+        for (Bond anchor : anchorBondBuffer) {
+            destroyBond(anchor, false, true);
+        }
+        anchorBondBuffer.clear();
+    }
+
+    private void removeAllAnchorBonds() {
+        for (int i = activeBonds.size - 1; i >= 0; i--) {
+            Bond bond = activeBonds.get(i);
+            if (bond.isActive() && bond.getBondType() == BondType.ANCHOR) {
+                destroyBond(bond, false, true);
+            }
+        }
+    }
+
+    private Bond findAnchorBondInBuffer(Particle organelle, Particle boundary, Array<Bond> buffer) {
+        if (buffer == null) {
+            return null;
+        }
+        for (Bond bond : buffer) {
+            if ((bond.getParticleA() == organelle && bond.getParticleB() == boundary) ||
+                (bond.getParticleB() == organelle && bond.getParticleA() == boundary)) {
+                return bond;
+            }
+        }
+        return null;
+    }
+
+    private void retuneAnchorBond(Bond bond, float delta) {
+        Particle a = bond.getParticleA();
+        Particle b = bond.getParticleB();
+        if (a == null || b == null) {
+            return;
+        }
+        float desiredRest = a.getPosition().dst(b.getPosition()) * ANCHOR_REST_SLACK;
+        float currentRest = bond.getRestLength();
+        float restDelta = desiredRest - currentRest;
+        if (Math.abs(restDelta) < 0.0001f) {
+            return;
+        }
+        float maxStep = Math.max(0.001f, desiredRest * ANCHOR_REST_ADJUST_RATE * delta);
+        restDelta = MathUtils.clamp(restDelta, -maxStep, maxStep);
+        bond.setRestLength(currentRest + restDelta);
+    }
+
+    private Bond createOrganelleAnchorBond(Particle organelle, Particle boundary) {
+        if (organelle == null || boundary == null) {
+            return null;
+        }
+        Vector2 orgPos = organelle.getPosition();
+        Vector2 boundaryPos = boundary.getPosition();
+        float restLength = orgPos.dst(boundaryPos) * ANCHOR_REST_SLACK;
+        Bond bond = bondPool.obtain();
+        bond.init(organelle, boundary, BondType.ANCHOR, restLength, ANCHOR_STIFFNESS, ANCHOR_DAMPING, ANCHOR_BREAK_FORCE);
+        bond.setUnbreakable(true);
+        activeBonds.add(bond);
+
+        if (unionFind.union(organelle.hashCode(), boundary.hashCode())) {
+            int newComponentId = unionFind.find(organelle.hashCode());
+            organelle.setComponentId(newComponentId);
+            boundary.setComponentId(newComponentId);
+        }
+
+        return bond;
     }
     
     /**
@@ -1643,8 +2031,8 @@ public final class PhysicsWorld implements Disposable {
      * This creates more open, spread-out molecular structures without breaking bonds.
      */
     private void applyIntramolecularSpacing() {
-        final float SPACING_RADIUS = 3.5f; // Particles within this distance repel
-        final float SPACING_STRENGTH = 25f; // Base repulsion force
+        final float SPACING_RADIUS = 4.2f; // Particles within this distance repel
+        final float SPACING_STRENGTH = 38f; // Base repulsion force
         
         // Group particles by molecule
         com.badlogic.gdx.utils.IntMap<Array<Particle>> moleculeGroups = new com.badlogic.gdx.utils.IntMap<>();
@@ -1661,6 +2049,8 @@ public final class PhysicsWorld implements Disposable {
             group.add(particle);
         }
         
+        ObjectMap<Particle, Array<Particle>> adjacency = buildSpacingAdjacencyCache();
+
         // For each molecule, apply spacing forces between its particles
         for (com.badlogic.gdx.utils.IntMap.Entry<Array<Particle>> entry : moleculeGroups) {
             Array<Particle> molecule = entry.value;
@@ -1688,19 +2078,8 @@ public final class PhysicsWorld implements Disposable {
                         // Spacing force falls off with distance (stronger when closer)
                         float spacingFactor = (SPACING_RADIUS - dist) / SPACING_RADIUS;
                         
-                        // Reduce force if particles are directly bonded (let bonds handle it)
-                        boolean directlyBonded = false;
-                        for (Bond bond : activeBonds) {
-                            if (!bond.isActive()) continue;
-                            if ((bond.getParticleA() == pA && bond.getParticleB() == pB) ||
-                                (bond.getParticleA() == pB && bond.getParticleB() == pA)) {
-                                directlyBonded = true;
-                                break;
-                            }
-                        }
-                        
-                        // If directly bonded, reduce spacing force by 70% (bonds already separate them)
-                        float forceMult = directlyBonded ? 0.3f : 1.0f;
+                        boolean directlyBonded = areDirectNeighbors(pA, pB, adjacency);
+                        float forceMult = directlyBonded ? 0.35f : 1.0f;
                         float force = SPACING_STRENGTH * spacingFactor * forceMult;
                         
                         // Apply equal and opposite forces
@@ -1713,6 +2092,48 @@ public final class PhysicsWorld implements Disposable {
                 }
             }
         }
+    }
+
+    private ObjectMap<Particle, Array<Particle>> buildSpacingAdjacencyCache() {
+        if (spacingAdjacencyCache.size > 0) {
+            for (ObjectMap.Entry<Particle, Array<Particle>> entry : spacingAdjacencyCache.entries()) {
+                entry.value.clear();
+                spacingAdjacencyPool.add(entry.value);
+            }
+            spacingAdjacencyCache.clear();
+        }
+
+        for (Bond bond : activeBonds) {
+            if (!bond.isActive()) continue;
+            if (bond.getBondType() == BondType.ANCHOR) continue;
+            addAdjacencyNeighbor(bond.getParticleA(), bond.getParticleB());
+            addAdjacencyNeighbor(bond.getParticleB(), bond.getParticleA());
+        }
+
+        return spacingAdjacencyCache;
+    }
+
+    private void addAdjacencyNeighbor(Particle particle, Particle neighbor) {
+        if (particle == null || neighbor == null) {
+            return;
+        }
+        Array<Particle> neighbors = spacingAdjacencyCache.get(particle);
+        if (neighbors == null) {
+            neighbors = spacingAdjacencyPool.size > 0 ? spacingAdjacencyPool.pop() : new Array<>();
+            spacingAdjacencyCache.put(particle, neighbors);
+        }
+        neighbors.add(neighbor);
+    }
+
+    private boolean areDirectNeighbors(Particle a, Particle b, ObjectMap<Particle, Array<Particle>> adjacencyCache) {
+        if (a == null || b == null || adjacencyCache == null) {
+            return false;
+        }
+        Array<Particle> neighbors = adjacencyCache.get(a);
+        if (neighbors == null) {
+            return false;
+        }
+        return neighbors.contains(b, true);
     }
     
     /**
@@ -2776,19 +3197,31 @@ public final class PhysicsWorld implements Disposable {
     private void pruneOrganelleBonds(IntMap<Array<CellStructure>> cellsByComponent,
                                      ObjectMap<Particle, CellStructure> organelleCells) {
         Array<Bond> bondsToBreak = new Array<>();
-        if (cellsByComponent == null || cellsByComponent.size == 0) return;
-        if (organelleCells == null || organelleCells.size == 0) return;
+        if (cellsByComponent == null || cellsByComponent.size == 0) {
+            removeAllAnchorBonds();
+            return;
+        }
         
         for (Bond bond : activeBonds) {
             if (!bond.isActive()) continue;
             
             Particle a = bond.getParticleA();
             Particle b = bond.getParticleB();
+
+            if (bond.getBondType() == BondType.ANCHOR) {
+                Particle organelle = a.isOrganelle() ? a : (b.isOrganelle() ? b : null);
+                Particle boundary = organelle == a ? b : a;
+                CellStructure cell = organelle != null && organelleCells != null ? organelleCells.get(organelle) : null;
+                if (organelle == null || boundary == null || cell == null || !cell.memberSet.contains(boundary)) {
+                    bondsToBreak.add(bond);
+                }
+                continue;
+            }
             
             // Check if this is an organelle-organelle bond
             if (a.isOrganelle() && b.isOrganelle()) {
-                CellStructure cellA = organelleCells.get(a);
-                CellStructure cellB = organelleCells.get(b);
+                CellStructure cellA = organelleCells != null ? organelleCells.get(a) : null;
+                CellStructure cellB = organelleCells != null ? organelleCells.get(b) : null;
                 if (cellA == null || cellB == null || cellA != cellB) {
                     bondsToBreak.add(bond);
                 }
@@ -2839,6 +3272,7 @@ public final class PhysicsWorld implements Disposable {
         // Bucket bonds by the cell containing their midpoint
         for (Bond bond : activeBonds) {
             if (!bond.isActive()) continue;
+            if (bond.getBondType() == BondType.ANCHOR) continue;
             Particle a = bond.getParticleA();
             Particle b = bond.getParticleB();
             if (a.getComponentId() != b.getComponentId()) continue; // Skip inter-component bonds
@@ -2893,9 +3327,11 @@ public final class PhysicsWorld implements Disposable {
             for (int i = 0; i < bondsA.size; i++) {
                 Bond bondA = bondsA.get(i);
                 if (!bondA.isActive()) continue;
+                if (bondA.getBondType() == BondType.ANCHOR) continue;
                 for (int j = i + 1; j < bondsA.size; j++) {
                     Bond bondB = bondsA.get(j);
                     if (!bondB.isActive()) continue;
+                    if (bondB.getBondType() == BondType.ANCHOR) continue;
                     if (!areBondsInSameComponent(bondA, bondB)) continue;
                     if (bondA.intersects(bondB)) {
                         bondsToBreak.add(bondA);
@@ -2907,9 +3343,11 @@ public final class PhysicsWorld implements Disposable {
             for (int i = 0; i < bondsA.size; i++) {
                 Bond bondA = bondsA.get(i);
                 if (!bondA.isActive()) continue;
+                if (bondA.getBondType() == BondType.ANCHOR) continue;
                 for (int j = 0; j < bondsB.size; j++) {
                     Bond bondB = bondsB.get(j);
                     if (!bondB.isActive()) continue;
+                    if (bondB.getBondType() == BondType.ANCHOR) continue;
                     if (!areBondsInSameComponent(bondA, bondB)) continue;
                     if (bondA.intersects(bondB)) {
                         bondsToBreak.add(bondA);
@@ -2987,6 +3425,7 @@ public final class PhysicsWorld implements Disposable {
             
             for (Bond bond : activeBonds) {
                 if (!bond.isActive()) continue;
+                if (bond.getBondType() == BondType.ANCHOR) continue;
                 
                 Particle a = bond.getParticleA();
                 Particle b = bond.getParticleB();
